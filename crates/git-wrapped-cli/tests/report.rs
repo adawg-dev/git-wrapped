@@ -109,6 +109,36 @@ fn reachable_lightweight_and_annotated_tags_set_release_cadence() {
 }
 
 #[test]
+fn release_cadence_counts_same_day_targets_once_each() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-01T10:00:00 +0000");
+    assert!(f.git(&["tag", "first"]).status.success());
+    assert!(f.git(&["tag", "first-alias"]).status.success());
+    f.commit("b", b"b\n", "a@x", "2024-01-01T12:00:00 +0000");
+    assert!(f.git(&["tag", "second"]).status.success());
+    let repo = discover(f.dir.path()).unwrap();
+    assert_eq!(
+        analyze(&repo, &Config::default())
+            .unwrap()
+            .insights
+            .release_interval_median_days,
+        None
+    );
+    f.commit("c", b"c\n", "a@x", "2024-01-02T10:00:00 +0000");
+    assert!(f.git(&["tag", "third"]).status.success());
+    let repo = discover(f.dir.path()).unwrap();
+    let tags = reachable_tag_dates(&repo).unwrap();
+    assert_eq!(tags.len(), 4);
+    assert_eq!(tags[0].target_sha, tags[1].target_sha);
+    assert_ne!(tags[1].target_sha, tags[2].target_sha);
+    let cadence = analyze(&repo, &Config::default())
+        .unwrap()
+        .insights
+        .release_interval_median_days;
+    assert_eq!(cadence, Some(0.5));
+}
+
+#[test]
 fn growth_churn_and_commit_records_use_canonical_counts() {
     let f = Fixture::new();
     f.commit("a", b"one\ntwo\n", "a@x", "2024-01-01T12:00:00 +0000");

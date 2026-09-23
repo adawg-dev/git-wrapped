@@ -305,8 +305,10 @@ pub fn derive_insights(data: &RepositoryAnalytics, tags: &[TagDate]) -> Result<I
                 .then_with(|| b.sha.cmp(&a.sha))
         })
         .map(record);
+    let mut seen_targets = HashSet::new();
     let mut tag_dates: Vec<_> = tags
         .iter()
+        .filter(|tag| seen_targets.insert(tag.target_sha.as_str()))
         .map(|tag| {
             DateTime::parse_from_rfc3339(&tag.committer_time)
                 .map(|time| time.date_naive())
@@ -314,7 +316,6 @@ pub fn derive_insights(data: &RepositoryAnalytics, tags: &[TagDate]) -> Result<I
         })
         .collect::<Result<_, String>>()?;
     tag_dates.sort_unstable();
-    tag_dates.dedup();
     let first_tag_days = days
         .first()
         .zip(tag_dates.first())
@@ -324,7 +325,7 @@ pub fn derive_insights(data: &RepositoryAnalytics, tags: &[TagDate]) -> Result<I
         .map(|pair| (pair[1] - pair[0]).num_days())
         .collect();
     intervals.sort_unstable();
-    let release_interval_median_days = if intervals.is_empty() {
+    let release_interval_median_days = if intervals.last().copied().unwrap_or(0) == 0 {
         None
     } else {
         let middle = intervals.len() / 2;
