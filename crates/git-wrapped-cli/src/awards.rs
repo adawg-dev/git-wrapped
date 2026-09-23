@@ -150,6 +150,9 @@ mod tests {
             commits: vec![],
             activity: vec![],
             activity_heatmap: vec![],
+            files: vec![],
+            directories: vec![],
+            extensions: vec![],
             awards: vec![],
         }
     }

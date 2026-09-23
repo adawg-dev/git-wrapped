@@ -15,6 +15,88 @@ fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output
 }
 
 #[test]
+fn file_history_keeps_binary_rename_and_distinct_paths() {
+    let f = Fixture::new();
+    f.commit("old.txt", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    assert!(f.git(&["mv", "old.txt", "new.txt"]).status.success());
+    assert!(f.git(&["commit", "-qm", "rename"]).status.success());
+    f.commit("image.bin", b"\0\x01", "b@x", "2024-01-03T10:00:00 +0000");
+    let data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    let renamed = data
+        .files
+        .iter()
+        .find(|x| x.display_path == "new.txt")
+        .unwrap();
+    assert_eq!(renamed.revisions, 1);
+    assert_eq!(renamed.rename_from, ["6f6c642e747874"]);
+    assert!(renamed.exists_at_head);
+    assert_eq!(
+        data.files
+            .iter()
+            .find(|x| x.display_path == "image.bin")
+            .unwrap()
+            .churn,
+        0
+    );
+    assert_eq!(
+        data.extensions
+            .iter()
+            .find(|x| x.extension == "txt")
+            .unwrap()
+            .current_files,
+        1
+    );
+    assert_eq!(
+        data.extensions
+            .iter()
+            .find(|x| x.extension == "txt")
+            .unwrap()
+            .historical_churn,
+        1
+    );
+    assert_eq!(
+        data.directories
+            .iter()
+            .find(|x| x.display_path == ".")
+            .unwrap()
+            .current_file_count,
+        2
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn file_history_distinguishes_non_utf8_paths_with_same_display() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let f = Fixture::new();
+    let blob = f.git(&["hash-object", "-w", "/dev/null"]);
+    assert!(blob.status.success());
+    let blob = String::from_utf8(blob.stdout).unwrap();
+    for byte in [0xfe, 0xff] {
+        let path = OsString::from_vec(vec![b'x', byte]);
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(f.dir.path())
+            .args([
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                blob.trim()
+            ])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success());
+    }
+    assert!(f.git(&["commit", "-qm", "paths"]).status.success());
+    let data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    assert_eq!(data.files.len(), 2);
+    assert_eq!(data.files[0].display_path, data.files[1].display_path);
+    assert!(data.files[0].path_id < data.files[1].path_id);
+}
+
+#[test]
 fn explicit_repo_creates_first_report() {
     let f = Fixture::new();
     f.commit(

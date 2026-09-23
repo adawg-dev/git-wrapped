@@ -1,13 +1,13 @@
 use crate::{
     awards::select_awards,
     config::{normalize, Config},
-    git::{scan, Repository},
+    git::{head_paths, scan, Repository},
     model::{
-        Activity, ActivityCell, CommitSummary, ContributorAnalytics, RepositoryAnalytics,
-        RepositoryMetadata,
+        Activity, ActivityCell, CommitSummary, ContributorAnalytics, DirectoryAnalytics,
+        ExtensionAnalytics, FileAnalytics, RepositoryAnalytics, RepositoryMetadata,
     },
 };
-use chrono::{DateTime, Datelike, FixedOffset, Timelike};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Timelike};
 use std::collections::{BTreeMap, HashSet};
 
 struct WorkingContributor {
@@ -26,6 +26,48 @@ struct WorkingContributor {
     by_month: [u64; 12],
     largest_commit: u64,
     largest_deletion: u64,
+}
+
+struct WorkingFile {
+    revisions: u64,
+    additions: u64,
+    deletions: u64,
+    churn: u64,
+    contributors: HashSet<String>,
+    dates: Vec<NaiveDate>,
+    first: DateTime<FixedOffset>,
+    latest: DateTime<FixedOffset>,
+    rename_from: Vec<Vec<u8>>,
+}
+
+#[derive(Default)]
+struct WorkingDirectory {
+    commits: u64,
+    churn: u64,
+    contributors: HashSet<String>,
+    current_file_count: usize,
+}
+
+fn directory(path: &[u8]) -> Vec<u8> {
+    path.iter()
+        .rposition(|&byte| byte == b'/')
+        .map(|index| path[..index].to_vec())
+        .unwrap_or_else(|| b".".to_vec())
+}
+
+fn extension(path: &[u8]) -> String {
+    let name = path.rsplit(|&byte| byte == b'/').next().unwrap_or(path);
+    let suffix = name.iter().rposition(|&byte| byte == b'.');
+    match suffix {
+        Some(index) if index > 0 && index + 1 < name.len() => {
+            String::from_utf8_lossy(&name[index + 1..]).to_lowercase()
+        }
+        _ => "[none]".into(),
+    }
+}
+
+fn path_id(path: &[u8]) -> String {
+    path.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn add(total: &mut u64, value: u64) -> Result<(), String> {
@@ -61,6 +103,9 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
     let mut activity: BTreeMap<String, Activity> = BTreeMap::new();
     let mut heatmap: BTreeMap<String, ActivityCell> = BTreeMap::new();
     let mut commits = Vec::new();
+    let mut files: BTreeMap<Vec<u8>, WorkingFile> = BTreeMap::new();
+    let mut directories: BTreeMap<Vec<u8>, WorkingDirectory> = BTreeMap::new();
+    let mut extensions: BTreeMap<String, ExtensionAnalytics> = BTreeMap::new();
     let mut first: Option<DateTime<FixedOffset>> = None;
     let mut latest: Option<DateTime<FixedOffset>> = None;
     let mut total_commits = 0;
@@ -113,17 +158,55 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
             contributor.latest = time;
         }
 
+        let mut commit_directories = HashSet::new();
         for change in &raw.changes {
             add(&mut commit_additions, change.additions)?;
             add(&mut commit_deletions, change.deletions)?;
             contributor.files.insert(change.path.clone());
-            let directory = change
-                .path
-                .iter()
-                .rposition(|&b| b == b'/')
-                .map(|index| change.path[..index].to_vec())
-                .unwrap_or_else(|| b".".to_vec());
-            contributor.directories.insert(directory);
+            let dir = directory(&change.path);
+            contributor.directories.insert(dir.clone());
+            commit_directories.insert(dir.clone());
+            let churn = change
+                .additions
+                .checked_add(change.deletions)
+                .ok_or("file churn overflow")?;
+            let file = files
+                .entry(change.path.clone())
+                .or_insert_with(|| WorkingFile {
+                    revisions: 0,
+                    additions: 0,
+                    deletions: 0,
+                    churn: 0,
+                    contributors: HashSet::new(),
+                    dates: Vec::new(),
+                    first: time,
+                    latest: time,
+                    rename_from: Vec::new(),
+                });
+            add(&mut file.revisions, 1)?;
+            add(&mut file.additions, change.additions)?;
+            add(&mut file.deletions, change.deletions)?;
+            add(&mut file.churn, churn)?;
+            file.contributors.insert(id.clone());
+            file.dates.push(time.date_naive());
+            file.first = file.first.min(time);
+            file.latest = file.latest.max(time);
+            if let Some(old_path) = &change.old_path {
+                file.rename_from.push(old_path.clone());
+            }
+            let dir_entry = directories.entry(dir).or_default();
+            add(&mut dir_entry.churn, churn)?;
+            dir_entry.contributors.insert(id.clone());
+            let ext = extension(&change.path);
+            let ext_entry = extensions.entry(ext.clone()).or_insert(ExtensionAnalytics {
+                extension: ext,
+                current_files: 0,
+                historical_churn: 0,
+            });
+            add(&mut ext_entry.historical_churn, churn)?;
+        }
+        for dir in commit_directories {
+            add(&mut directories.get_mut(&dir).unwrap().commits, 1)?;
         }
         let size = commit_additions
             .checked_add(commit_deletions)
@@ -172,6 +255,70 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
     })?;
 
     let (first, latest) = first.zip(latest).ok_or("repository has no commits")?;
+    let head_paths = head_paths(repo)?;
+    for path in &head_paths {
+        let ext = extension(path);
+        let ext_entry = extensions.entry(ext.clone()).or_insert(ExtensionAnalytics {
+            extension: ext,
+            current_files: 0,
+            historical_churn: 0,
+        });
+        ext_entry.current_files = ext_entry
+            .current_files
+            .checked_add(1)
+            .ok_or("extension file count overflow")?;
+        let mut dir = directory(path);
+        loop {
+            if let Some(entry) = directories.get_mut(&dir) {
+                entry.current_file_count = entry
+                    .current_file_count
+                    .checked_add(1)
+                    .ok_or("directory file count overflow")?;
+            }
+            if dir == b"." {
+                break;
+            }
+            dir = directory(&dir);
+        }
+    }
+    let head_set: HashSet<&[u8]> = head_paths.iter().map(Vec::as_slice).collect();
+    let files = files
+        .into_iter()
+        .map(|(path, mut file)| {
+            file.dates.sort_unstable();
+            let longest_quiet_days = file
+                .dates
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).num_days())
+                .max()
+                .unwrap_or(0);
+            FileAnalytics {
+                path_id: path_id(&path),
+                display_path: String::from_utf8_lossy(&path).into_owned(),
+                revisions: file.revisions,
+                additions: file.additions,
+                deletions: file.deletions,
+                churn: file.churn,
+                contributors: file.contributors.len(),
+                first_change: file.first.to_rfc3339(),
+                latest_change: file.latest.to_rfc3339(),
+                exists_at_head: head_set.contains(path.as_slice()),
+                rename_from: file.rename_from.iter().map(|old| path_id(old)).collect(),
+                longest_quiet_days,
+            }
+        })
+        .collect();
+    let directories = directories
+        .into_iter()
+        .map(|(path, dir)| DirectoryAnalytics {
+            path_id: path_id(&path),
+            display_path: String::from_utf8_lossy(&path).into_owned(),
+            commits: dir.commits,
+            churn: dir.churn,
+            contributors: dir.contributors.len(),
+            current_file_count: dir.current_file_count,
+        })
+        .collect();
     let mut contributors = contributors
         .into_iter()
         .map(|(id, mut c)| {
@@ -226,6 +373,9 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         commits,
         activity: activity.into_values().collect(),
         activity_heatmap: heatmap.into_values().collect(),
+        files,
+        directories,
+        extensions: extensions.into_values().collect(),
         awards: Vec::new(),
     };
     result.awards = select_awards(&result);

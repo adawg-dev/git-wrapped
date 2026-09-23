@@ -80,6 +80,39 @@ pub struct ActivityCell {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct FileAnalytics {
+    pub path_id: String,
+    pub display_path: String,
+    pub revisions: u64,
+    pub additions: u64,
+    pub deletions: u64,
+    pub churn: u64,
+    pub contributors: usize,
+    pub first_change: String,
+    pub latest_change: String,
+    pub exists_at_head: bool,
+    pub rename_from: Vec<String>,
+    pub longest_quiet_days: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DirectoryAnalytics {
+    pub path_id: String,
+    pub display_path: String,
+    pub commits: u64,
+    pub churn: u64,
+    pub contributors: usize,
+    pub current_file_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ExtensionAnalytics {
+    pub extension: String,
+    pub current_files: usize,
+    pub historical_churn: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Award {
     pub slug: String,
     pub title: String,
@@ -113,6 +146,9 @@ pub struct RepositoryAnalytics {
     pub commits: Vec<CommitSummary>,
     pub activity: Vec<Activity>,
     pub activity_heatmap: Vec<ActivityCell>,
+    pub files: Vec<FileAnalytics>,
+    pub directories: Vec<DirectoryAnalytics>,
+    pub extensions: Vec<ExtensionAnalytics>,
     pub awards: Vec<Award>,
 }
 

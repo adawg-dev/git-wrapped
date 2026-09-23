@@ -81,6 +81,24 @@ pub fn discover(path: &Path) -> Result<Repository, String> {
     })
 }
 
+pub fn head_paths(repo: &Repository) -> Result<Vec<Vec<u8>>, String> {
+    let bytes = git(
+        &repo.root,
+        &[
+            OsStr::new("ls-tree"),
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("--name-only"),
+            OsStr::new("HEAD"),
+        ],
+    )?;
+    Ok(bytes
+        .split(|&byte| byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(Vec::from)
+        .collect())
+}
+
 fn token<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, String> {
     let mut bytes = Vec::new();
     let n = reader
