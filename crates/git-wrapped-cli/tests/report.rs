@@ -131,6 +131,18 @@ fn invalid_config_exclusion_names_file_and_pattern() {
         error.contains(".git-wrapped.json") && error.contains("["),
         "{error}"
     );
+
+    fs::remove_file(f.dir.path().join(".git-wrapped.json")).unwrap();
+    let cli_error = cli(
+        &["--exclude".as_ref(), "[".as_ref(), "export".as_ref()],
+        f.dir.path(),
+    );
+    assert!(!cli_error.status.success());
+    let stderr = String::from_utf8_lossy(&cli_error.stderr);
+    assert!(
+        stderr.contains("--exclude") && stderr.contains("["),
+        "{stderr}"
+    );
 }
 
 #[test]

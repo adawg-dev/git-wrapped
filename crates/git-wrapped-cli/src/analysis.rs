@@ -520,7 +520,7 @@ pub fn analyze_with_options(
         let source = if index < config.exclude.len() {
             format!("{}: ", repo.root.join(".git-wrapped.json").display())
         } else {
-            "".into()
+            "--exclude: ".into()
         };
         excluded_builder
             .add(Glob::new(pattern).map_err(|error| {
