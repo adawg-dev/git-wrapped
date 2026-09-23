@@ -1,9 +1,9 @@
 use crate::model::{Activity, RepositoryAnalytics};
 use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Read},
     path::{Component, Path},
 };
 
@@ -119,40 +119,62 @@ fn valid_award_slug(slug: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-fn previous_card_names(output: &Path) -> BTreeSet<String> {
-    let path = output.join("data.json");
-    if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
-        return BTreeSet::new();
-    }
-    let Ok(bytes) = fs::read(path) else {
-        return BTreeSet::new();
+const MAX_CARD_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+
+fn valid_card_name(name: &str) -> bool {
+    let Some((directory, file)) = name.split_once('/') else {
+        return false;
     };
-    let Ok(data) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return BTreeSet::new();
+    let Some(stem) = file.strip_suffix(".svg") else {
+        return false;
     };
-    let people = data["contributors"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|c| Some((c["id"].as_str()?.to_owned(), c["commits"].as_u64()?)))
-        .collect();
-    let mut names: BTreeSet<_> = contributor_card_names(people)
-        .into_values()
-        .map(|name| format!("contributors/{name}.svg"))
-        .collect();
-    for slug in data["awards"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|a| a["slug"].as_str())
-        .filter(|slug| valid_award_slug(slug))
-    {
-        names.insert(format!("awards/{slug}.svg"));
+    match directory {
+        "awards" => valid_award_slug(stem),
+        "contributors" => {
+            let (hex, suffix) = stem.split_once('-').unwrap_or((stem, ""));
+            (1..=16).contains(&hex.len())
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && !stem.ends_with('-')
+                && (suffix.is_empty()
+                    || suffix
+                        .parse::<usize>()
+                        .is_ok_and(|n| n >= 2 && n.to_string() == suffix))
+        }
+        _ => false,
     }
-    names
 }
 
-fn remove_stale_card(output: &Path, name: &str) -> Result<(), String> {
+fn previous_cards(output: &Path) -> BTreeMap<String, String> {
+    let path = output.join("card-manifest.json");
+    if !fs::symlink_metadata(&path)
+        .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CARD_MANIFEST_BYTES)
+    {
+        return BTreeMap::new();
+    }
+    let Ok(file) = fs::File::open(path) else {
+        return BTreeMap::new();
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_CARD_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_CARD_MANIFEST_BYTES
+    {
+        return BTreeMap::new();
+    }
+    let Ok(cards) = serde_json::from_slice::<BTreeMap<String, String>>(&bytes) else {
+        return BTreeMap::new();
+    };
+    cards
+        .into_iter()
+        .filter(|(name, _)| valid_card_name(name))
+        .collect()
+}
+
+fn remove_stale_card(output: &Path, name: &str, expected: &str) -> Result<(), String> {
     let path = output.join(name);
     if let Some(parent) = path.parent() {
         checked_directory(parent)?;
@@ -166,7 +188,7 @@ fn remove_stale_card(output: &Path, name: &str) -> Result<(), String> {
     let Ok(contents) = fs::read_to_string(&path) else {
         return Ok(());
     };
-    if contents.starts_with("<svg") && contents.contains(">GIT WRAPPED</text>") {
+    if contents == expected {
         fs::remove_file(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
     }
     Ok(())
@@ -787,8 +809,8 @@ pub fn render_report(
     theme: Theme,
 ) -> Result<(), String> {
     checked_directory(output)?;
-    let previous_cards = previous_card_names(output);
-    let mut current_cards = BTreeSet::new();
+    let previous_cards = previous_cards(output);
+    let mut current_cards = BTreeMap::new();
     let palette = theme.palette();
     let (bg, fg, accent, muted) = (palette.bg, palette.fg, palette.accent, palette.muted);
     let write = |name: &str, height, body: String| -> Result<(), String> {
@@ -1100,8 +1122,9 @@ pub fn render_report(
             ),
         );
         let path = format!("contributors/{name}.svg");
-        write(&path, 800, body)?;
-        current_cards.insert(path);
+        let contents = svg(800, bg, &body);
+        write_artifact(output, &path, contents.as_bytes())?;
+        current_cards.insert(path, contents);
     }
 
     let mut body = heading("Every month tells a story");
@@ -1261,16 +1284,23 @@ pub fn render_report(
             body += &text(64, 310, 44, fg, "No eligible winner");
         }
         let path = format!("awards/{slug}.svg");
-        write(&path, 675, body)?;
-        current_cards.insert(path);
+        let contents = svg(675, bg, &body);
+        write_artifact(output, &path, contents.as_bytes())?;
+        current_cards.insert(path, contents);
     }
     let mut json =
         serde_json::to_vec_pretty(data).map_err(|e| format!("serialize data.json: {e}"))?;
     json.push(b'\n');
     write_artifact(output, "data.json", &json)?;
-    for name in previous_cards.difference(&current_cards) {
-        remove_stale_card(output, name)?;
+    for (name, expected) in &previous_cards {
+        if !current_cards.contains_key(name) {
+            remove_stale_card(output, name, expected)?;
+        }
     }
+    let mut manifest = serde_json::to_vec(&current_cards)
+        .map_err(|e| format!("serialize card-manifest.json: {e}"))?;
+    manifest.push(b'\n');
+    write_artifact(output, "card-manifest.json", &manifest)?;
     Ok(())
 }
 

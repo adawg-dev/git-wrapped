@@ -545,6 +545,7 @@ fn explicit_repo_creates_first_report() {
             "activity.svg",
             "additions-deletions.svg",
             "awards",
+            "card-manifest.json",
             "commits-over-time.svg",
             "contributor-mix.svg",
             "contributors",
@@ -1773,6 +1774,80 @@ fn rerender_removes_only_stale_generated_cards() {
             "keep"
         );
     }
+}
+
+#[test]
+fn forged_data_and_copied_card_do_not_delete_unrelated_svg() {
+    use git_wrapped::render::{render_report, Theme};
+    let data = cross_offset_data();
+    let out = tempdir();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    let original = fs::read_dir(out.path().join("contributors"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let unrelated = out.path().join("contributors/666f726765.svg");
+    fs::copy(original, &unrelated).unwrap();
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.path().join("data.json")).unwrap()).unwrap();
+    metadata["contributors"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "id": "forge", "commits": 1
+        }));
+    fs::write(
+        out.path().join("data.json"),
+        serde_json::to_vec(&metadata).unwrap(),
+    )
+    .unwrap();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    assert!(unrelated.exists());
+}
+
+#[test]
+fn oversized_card_manifest_skips_stale_cleanup() {
+    use git_wrapped::render::{render_report, Theme};
+    let mut data = cross_offset_data();
+    data.contributors[0].id = "alpha@x".into();
+    let mut other = data.contributors[0].clone();
+    other.id = "beta@x".into();
+    data.contributors.push(other);
+    let out = tempdir();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    let stale = out.path().join("contributors/626574614078.svg");
+    assert!(stale.exists());
+    let manifest = out.path().join("card-manifest.json");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(manifest)
+        .unwrap()
+        .set_len(4 * 1024 * 1024 + 1)
+        .unwrap();
+    data.contributors.pop();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    assert!(stale.exists());
+}
+
+#[test]
+fn edited_generated_card_is_preserved_when_it_becomes_stale() {
+    use git_wrapped::render::{render_report, Theme};
+    let mut data = cross_offset_data();
+    data.contributors[0].id = "alpha@x".into();
+    let mut other = data.contributors[0].clone();
+    other.id = "beta@x".into();
+    data.contributors.push(other);
+    let out = tempdir();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    let stale = out.path().join("contributors/626574614078.svg");
+    let mut edited = fs::read_to_string(&stale).unwrap();
+    edited = edited.replace("GIT WRAPPED", "GIT WRAPPED edited");
+    fs::write(&stale, &edited).unwrap();
+    data.contributors.pop();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    assert_eq!(fs::read_to_string(stale).unwrap(), edited);
 }
 
 #[test]
