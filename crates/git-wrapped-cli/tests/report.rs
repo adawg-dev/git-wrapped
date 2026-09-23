@@ -395,6 +395,11 @@ fn growth_churn_and_commit_records_use_canonical_counts() {
     assert_eq!(i.largest_commit.as_ref().unwrap().additions, 2);
     assert_eq!(i.largest_cleanup.as_ref().unwrap().author_id, "b@x");
     assert_eq!(i.largest_cleanup.as_ref().unwrap().deletions, 1);
+    let out = tempdir();
+    git_wrapped::render::render_report(&x, out.path(), git_wrapped::render::Theme::Dark).unwrap();
+    let highlights = fs::read_to_string(out.path().join("highlights.svg")).unwrap();
+    assert!(highlights.contains("2024-01 grew by 2 historical net lines"));
+    assert!(highlights.contains("deleted 1 historical line"));
 }
 
 #[test]
@@ -538,9 +543,13 @@ fn explicit_repo_creates_first_report() {
         [
             "activity-heatmap.svg",
             "activity.svg",
+            "additions-deletions.svg",
             "awards",
+            "commits-over-time.svg",
             "contributors.svg",
             "data.json",
+            "highlights.svg",
+            "rhythm.svg",
             "summary.svg"
         ]
     );
@@ -1410,6 +1419,74 @@ fn cross_offset_data() -> git_wrapped::model::RepositoryAnalytics {
     f.commit("a", b"a\n", "a@x", "2024-01-02T00:30:00 +1400");
     f.commit("b", b"b\n", "a@x", "2024-01-01T23:30:00 -1200");
     analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap()
+}
+
+#[test]
+fn growth_rhythm_and_highlights_use_canonical_units() {
+    let mut data = cross_offset_data();
+    data.activity.push(git_wrapped::model::Activity {
+        month: "2024-03".into(),
+        commits: 1,
+        additions: 3,
+        deletions: 1,
+    });
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Light)
+        .unwrap();
+    let growth = fs::read_to_string(out.path().join("additions-deletions.svg")).unwrap();
+    for label in ["Lines added", "Lines deleted", "Cumulative historical net"] {
+        assert!(growth.contains(label), "{label}");
+    }
+    assert!(growth.contains("<title>2024-02: +0 additions, −0 deletions"));
+    let commits = fs::read_to_string(out.path().join("commits-over-time.svg")).unwrap();
+    assert!(commits.contains("<title>2024-02: 0 commits</title>"));
+    let rhythm = fs::read_to_string(out.path().join("rhythm.svg")).unwrap();
+    assert!(rhythm.contains("Author local hour"));
+    assert!(rhythm.contains("Monday"));
+    assert!(rhythm.contains("<title>Monday 23:00: 1 commits</title>"));
+    assert!(rhythm.contains("<title>Tuesday 00:00: 1 commits</title>"));
+    let highlights = fs::read_to_string(out.path().join("highlights.svg")).unwrap();
+    assert!(highlights.contains("2024-01-01"));
+    assert!(highlights.contains("new contributor"));
+    assert!(highlights.contains("1 new contributor"));
+    assert!(!highlights.contains("largest single cleanup"));
+    assert!(!highlights.contains("oldest surviving"));
+}
+
+#[test]
+fn new_charts_handle_empty_one_month_and_sixty_years() {
+    let mut data = cross_offset_data();
+    let out = tempdir();
+    for activity in [vec![], data.activity.clone()] {
+        data.activity = activity;
+        git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+            .unwrap();
+        for name in [
+            "commits-over-time.svg",
+            "additions-deletions.svg",
+            "rhythm.svg",
+        ] {
+            let svg = fs::read_to_string(out.path().join(name)).unwrap();
+            assert!(!svg.contains("NaN") && !svg.contains("inf"), "{name}");
+        }
+    }
+    data.activity.insert(
+        0,
+        git_wrapped::model::Activity {
+            month: "1960-01".into(),
+            commits: 1,
+            additions: 1,
+            deletions: 0,
+        },
+    );
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    for name in ["commits-over-time.svg", "additions-deletions.svg"] {
+        let svg = fs::read_to_string(out.path().join(name)).unwrap();
+        assert!(svg.contains("<title>1960-02:"), "{name}");
+        assert!(svg.matches("data-x-label=").count() <= 12, "{name}");
+        assert!(!svg.contains("NaN") && !svg.contains("inf"), "{name}");
+    }
 }
 
 #[test]

@@ -1,5 +1,5 @@
-use crate::model::RepositoryAnalytics;
-use chrono::{Datelike, NaiveDate};
+use crate::model::{Activity, RepositoryAnalytics};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 use std::{
     fs,
     io::ErrorKind,
@@ -403,6 +403,286 @@ fn poster(data: &RepositoryAnalytics, p: Palette) -> String {
     svg(1600, p.bg, &body)
 }
 
+fn page_heading(title: &str, subtitle: &str, p: Palette) -> String {
+    text(64, 66, 18, p.accent, "GIT WRAPPED")
+        + &text(64, 125, 42, p.fg, title)
+        + &text(64, 166, 18, p.muted, subtitle)
+}
+
+fn month_tick_step(count: usize) -> usize {
+    let minimum = count.div_ceil(12).max(1);
+    if count > 48 {
+        minimum.div_ceil(12) * 12
+    } else if count > 12 {
+        minimum.div_ceil(3) * 3
+    } else {
+        1
+    }
+}
+
+fn month_ticks(months: &[(String, u64)], p: Palette) -> String {
+    let step = month_tick_step(months.len());
+    let mut body = String::new();
+    for (i, (month, _)) in months.iter().enumerate().step_by(step) {
+        let x = 110.0 + (i as f64 + 0.5) * 1026.0 / months.len() as f64;
+        let label = if step >= 12 { &month[..4] } else { month };
+        body += &format!(
+            "<g data-x-label=\"true\">{}</g>",
+            text(x as u32, 711, 16, p.muted, label)
+        );
+    }
+    body
+}
+
+fn commits_over_time(data: &RepositoryAnalytics, p: Palette) -> String {
+    let months = monthly_counts(data);
+    let mut body = page_heading(
+        "Commits over time",
+        "Monthly commits · author calendar dates · includes merge and empty commits",
+        p,
+    );
+    if months.is_empty() {
+        body += &text(64, 390, 22, p.muted, "No monthly activity to chart");
+    } else {
+        let max = months.iter().map(|m| m.1).max().unwrap_or(0).max(1);
+        body += &format!(
+            "<path d=\"M 110 220 V 670 H 1136\" fill=\"none\" stroke=\"{}\"/>",
+            p.muted
+        );
+        body += &text(64, 226, 16, p.muted, &max.to_string());
+        body += &text(80, 670, 16, p.muted, "0");
+        let step = 1026.0 / months.len() as f64;
+        for (i, (month, count)) in months.iter().enumerate() {
+            let height = *count as f64 / max as f64 * 450.0;
+            let width = (step * 0.72).min(52.0);
+            let x = 110.0 + (i as f64 + 0.5) * step - width / 2.0;
+            body += &format!(
+                "<g><title>{month}: {count} commits</title>{}</g>",
+                rect(x, 670.0 - height, width, height, p.accent)
+            );
+        }
+        body += &month_ticks(&months, p);
+        body += &text(
+            110,
+            758,
+            17,
+            p.muted,
+            &format!(
+                "{} → {} · commits per month",
+                months[0].0,
+                months[months.len() - 1].0
+            ),
+        );
+    }
+    svg(800, p.bg, &body)
+}
+
+fn additions_deletions(data: &RepositoryAnalytics, p: Palette) -> String {
+    let months = monthly_counts(data);
+    let changes: std::collections::BTreeMap<&str, &Activity> = data
+        .activity
+        .iter()
+        .map(|a| (a.month.as_str(), a))
+        .collect();
+    let mut body = page_heading(
+        "Growth and turnover",
+        "Monthly historical line changes · cumulative net is historical arithmetic",
+        p,
+    );
+    if months.is_empty() {
+        body += &text(64, 390, 22, p.muted, "No monthly activity to chart");
+    } else {
+        let max = data
+            .activity
+            .iter()
+            .map(|a| a.additions.max(a.deletions))
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let step = 1026.0 / months.len() as f64;
+        let mut cumulative = 0_i128;
+        let mut totals = Vec::with_capacity(months.len());
+        for (month, _) in &months {
+            let (added, deleted) = changes
+                .get(month.as_str())
+                .map(|a| (a.additions, a.deletions))
+                .unwrap_or((0, 0));
+            cumulative += i128::from(added) - i128::from(deleted);
+            totals.push(cumulative);
+        }
+        let net_scale = totals
+            .iter()
+            .map(|n| n.unsigned_abs())
+            .max()
+            .unwrap_or(0)
+            .max(1) as f64;
+        body += &format!(
+            "<path d=\"M 110 215 V 475 H 1136 M 110 605 H 1136\" fill=\"none\" stroke=\"{}\"/>",
+            p.muted
+        );
+        body += &text(64, 226, 16, p.muted, &max.to_string());
+        body += &text(80, 475, 16, p.muted, "0");
+        body += &text(64, 610, 16, p.muted, "0");
+        let mut points = String::new();
+        for (i, (month, _)) in months.iter().enumerate() {
+            let (added, deleted) = changes
+                .get(month.as_str())
+                .map(|a| (a.additions, a.deletions))
+                .unwrap_or((0, 0));
+            let center = 110.0 + (i as f64 + 0.5) * step;
+            let width = (step * 0.31).min(22.0);
+            let added_h = added as f64 / max as f64 * 250.0;
+            let deleted_h = deleted as f64 / max as f64 * 250.0;
+            body += &format!(
+                "<g><title>{month}: +{added} additions, −{deleted} deletions, cumulative historical net {}</title>{}{}</g>",
+                totals[i],
+                rect(center - width - 1.0, 475.0 - added_h, width, added_h, p.positive),
+                rect(center + 1.0, 475.0 - deleted_h, width, deleted_h, p.negative),
+            );
+            let net_y = 605.0 - totals[i] as f64 / net_scale * 60.0;
+            points += &format!("{center:.2},{net_y:.2} ");
+        }
+        body += &format!(
+            "<polyline points=\"{points}\" fill=\"none\" stroke=\"{}\" stroke-width=\"3\"/>",
+            p.secondary
+        );
+        body += &rect(110.0, 504.0, 18.0, 18.0, p.positive);
+        body += &text(138, 520, 17, p.fg, "Lines added");
+        body += &rect(306.0, 504.0, 18.0, 18.0, p.negative);
+        body += &text(334, 520, 17, p.fg, "Lines deleted");
+        body += &format!(
+            "<path d=\"M 534 513 H 558\" fill=\"none\" stroke=\"{}\" stroke-width=\"3\"/>",
+            p.secondary
+        );
+        body += &text(570, 520, 17, p.fg, "Cumulative historical net");
+        body += &month_ticks(&months, p);
+        body += &text(
+            110,
+            758,
+            17,
+            p.muted,
+            &format!(
+                "{} → {} · lines, not current file size",
+                months[0].0,
+                months[months.len() - 1].0
+            ),
+        );
+    }
+    svg(800, p.bg, &body)
+}
+
+fn rhythm(data: &RepositoryAnalytics, p: Palette) -> String {
+    let mut body = page_heading(
+        "A week of rhythms",
+        "Commits by author local weekday × author local hour · recorded offsets",
+        p,
+    );
+    let mut grid = [[0_u64; 24]; 7];
+    for commit in &data.commits {
+        if let Ok(time) = DateTime::parse_from_rfc3339(&commit.author_time) {
+            grid[time.weekday().num_days_from_monday() as usize][time.hour() as usize] += 1;
+        }
+    }
+    let max = grid.iter().flatten().copied().max().unwrap_or(0);
+    if max == 0 {
+        body += &text(64, 390, 22, p.muted, "No author-local activity to chart");
+    } else {
+        body += &text(64, 217, 17, p.muted, "Author local weekday");
+        body += &text(446, 744, 17, p.muted, "Author local hour (00:00–23:00)");
+        for (day, name) in [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 257.0 + day as f64 * 56.0;
+            body += &text(64, (y + 29.0) as u32, 17, p.fg, name);
+            for (hour, count) in grid[day].iter().copied().enumerate() {
+                let x = 200.0 + hour as f64 * 39.0;
+                let color = if count == 0 { p.muted } else { p.accent };
+                body += &format!("<g opacity=\"{:.2}\"><title>{name} {hour:02}:00: {count} commits</title>{}</g>", if count == 0 { 0.15 } else { 0.35 + 0.65 * count as f64 / max as f64 }, rect(x, y, 33.0, 38.0, color));
+            }
+        }
+        for hour in [0, 3, 6, 9, 12, 15, 18, 21, 23] {
+            body += &text(198 + hour * 39, 682, 16, p.muted, &format!("{hour:02}"));
+        }
+        body += &text(
+            200,
+            714,
+            16,
+            p.muted,
+            &format!("Stronger color = more commits · maximum {max} commits per cell"),
+        );
+    }
+    svg(800, p.bg, &body)
+}
+
+fn highlights(data: &RepositoryAnalytics, p: Palette) -> String {
+    let mut body = page_heading(
+        "A few true things",
+        "Fixed facts from selected history · author calendar dates",
+        p,
+    );
+    let mut facts = Vec::new();
+    if let Some(peak) = &data.insights.busiest_day {
+        facts.push(format!(
+            "{} had {} commit{}, the busiest author-calendar day.",
+            peak.label,
+            peak.count,
+            if peak.count == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(peak) = data
+        .insights
+        .highest_growth_month
+        .as_ref()
+        .filter(|peak| peak.count > 0)
+    {
+        facts.push(format!(
+            "{} grew by {} historical net line{}, the highest monthly gain.",
+            peak.label,
+            peak.count,
+            if peak.count == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(cleanup) = data
+        .insights
+        .largest_cleanup
+        .as_ref()
+        .filter(|cleanup| cleanup.deletions > 0)
+    {
+        facts.push(format!(
+            "Commit {} deleted {} historical line{}, the largest single cleanup.",
+            short(&cleanup.sha, 12),
+            cleanup.deletions,
+            if cleanup.deletions == 1 { "" } else { "s" }
+        ));
+    }
+    let newcomers: i64 = data.newcomers_by_month.iter().map(|peak| peak.count).sum();
+    if newcomers > 0 {
+        facts.push(format!(
+            "{newcomers} new contributor{} first appeared in selected history.",
+            if newcomers == 1 { "" } else { "s" }
+        ));
+    }
+    if facts.is_empty() {
+        body += &text(64, 350, 22, p.muted, "No highlight facts available");
+    } else {
+        for (i, fact) in facts.iter().enumerate() {
+            let y = 260 + i as u32 * 116;
+            body += &text(64, y, 19, p.accent, &format!("0{}", i + 1));
+            body += &text(130, y, 23, p.fg, &short(fact, 86));
+        }
+    }
+    svg(800, p.bg, &body)
+}
+
 /// Write the fixed report artifacts. Repository data never determines output paths.
 pub fn render_report(
     data: &RepositoryAnalytics,
@@ -423,6 +703,17 @@ pub fn render_report(
     let heading =
         |title: &str| text(64, 66, 18, accent, "GIT WRAPPED") + &text(64, 125, 42, fg, title);
     write_artifact(output, "summary.svg", poster(data, palette).as_bytes())?;
+    for (name, page) in [
+        ("commits-over-time.svg", commits_over_time(data, palette)),
+        (
+            "additions-deletions.svg",
+            additions_deletions(data, palette),
+        ),
+        ("rhythm.svg", rhythm(data, palette)),
+        ("highlights.svg", highlights(data, palette)),
+    ] {
+        write_artifact(output, name, page.as_bytes())?;
+    }
 
     let mut body = heading("The people behind the commits");
     let max = data
