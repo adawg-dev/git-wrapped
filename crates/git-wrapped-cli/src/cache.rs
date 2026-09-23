@@ -166,6 +166,18 @@ pub fn key(
         .map_err(|e| format!("read HEAD: {e}"))?
         .trim()
         .to_owned();
+    let shallow_path = git_bytes(&root, &["rev-parse", "--git-path", "shallow"])?;
+    let shallow_path = PathBuf::from(OsString::from_vec(
+        shallow_path
+            .strip_suffix(b"\n")
+            .unwrap_or(&shallow_path)
+            .to_vec(),
+    ));
+    let shallow_boundary = file_bytes_if_present(&if shallow_path.is_absolute() {
+        shallow_path
+    } else {
+        root.join(shallow_path)
+    })?;
     // Git's mailmap and tag refs can change analytics even when HEAD does not.
     let tags = git_bytes(
         &root,
@@ -216,6 +228,8 @@ pub fn key(
         "mailmap_file_path": configured_mailmap.as_deref().map(hex),
         "mailmap_blob": resolved_blob,
         "tags": hex(&tags),
+        "shallow": repo.shallow,
+        "shallow_boundary": shallow_boundary.as_deref().map(hex),
     }))
     .map_err(|e| format!("serialize cache key: {e}"))?;
     Ok(CacheKey {

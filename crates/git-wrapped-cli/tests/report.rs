@@ -1979,6 +1979,103 @@ fn shallow_clone_reports_available_history() {
 }
 
 #[test]
+fn deepening_shallow_clone_invalidates_cache_with_unchanged_head() {
+    let f = Fixture::new();
+    f.commit("one", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("two", b"two\n", "a@x", "2024-01-02T10:00:00 +0000");
+    f.commit("three", b"three\n", "a@x", "2024-01-03T10:00:00 +0000");
+    let dir = tempdir();
+    let clone = dir.path().join("clone");
+    let cloned = Command::new("git")
+        .args(["clone", "-q", "--depth=1"])
+        .arg(format!("file://{}", f.dir.path().display()))
+        .arg(&clone)
+        .output()
+        .unwrap();
+    assert!(
+        cloned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cloned.stderr)
+    );
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let out = dir.path().join("report");
+    let args: &[&std::ffi::OsStr] = &[
+        "--no-png".as_ref(),
+        "--output".as_ref(),
+        out.as_os_str(),
+        "report".as_ref(),
+    ];
+    let run = || cli(args, &clone);
+    assert!(run().status.success());
+    assert!(String::from_utf8_lossy(&run().stderr).contains("Using cached analysis"));
+    let initial: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("data.json")).unwrap()).unwrap();
+    assert_eq!(initial["repository"]["total_commits"], 1);
+
+    let deepen = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["fetch", "-q", "--deepen=1", "origin"])
+        .output()
+        .unwrap();
+    assert!(
+        deepen.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deepen.stderr)
+    );
+    assert_eq!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&clone)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+        head
+    );
+    let deeper = run();
+    assert!(deeper.status.success());
+    assert!(!String::from_utf8_lossy(&deeper.stderr).contains("Using cached analysis"));
+    let data: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("data.json")).unwrap()).unwrap();
+    assert_eq!(data["repository"]["total_commits"], 2);
+
+    let unshallow = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["fetch", "-q", "--unshallow", "origin"])
+        .output()
+        .unwrap();
+    assert!(
+        unshallow.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unshallow.stderr)
+    );
+    assert_eq!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&clone)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+        head
+    );
+    let complete = run();
+    assert!(complete.status.success());
+    assert!(!String::from_utf8_lossy(&complete.stderr).contains("Using cached analysis"));
+    let data: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("data.json")).unwrap()).unwrap();
+    assert_eq!(data["repository"]["total_commits"], 3);
+}
+
+#[test]
 fn scan_preserves_control_byte_path() {
     let f = Fixture::new();
     f.commit(
