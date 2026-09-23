@@ -1,3 +1,6 @@
 /target/
 /git-wrapped-report/
 git-wrapped-handoff.md
+/docs/
+CLAUDE.md
+AGENTS.md
