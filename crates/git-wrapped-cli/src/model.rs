@@ -211,6 +211,34 @@ pub struct RepositoryMetadata {
     pub shallow: bool,
 }
 
+impl RepositoryMetadata {
+    pub fn selection_labels(&self) -> Vec<String> {
+        let mut labels = Vec::new();
+        let dates = [
+            self.selected_since
+                .as_ref()
+                .map(|date| format!("Since {date}")),
+            self.selected_until
+                .as_ref()
+                .map(|date| format!("Until {date}")),
+        ];
+        let dates = dates.into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        if !dates.is_empty() {
+            labels.push(dates);
+        }
+        if !self.selected_authors.is_empty() {
+            labels.push(format!("Authors: {}", self.selected_authors.join(", ")));
+        }
+        if self.timezone != "commit" {
+            labels.push(format!("Timezone: {}", self.timezone));
+        }
+        if !self.include_merges {
+            labels.push("Merges excluded".into());
+        }
+        labels
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct RepositoryAnalytics {
     pub repository: RepositoryMetadata,

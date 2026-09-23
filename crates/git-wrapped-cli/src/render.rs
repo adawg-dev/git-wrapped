@@ -288,6 +288,8 @@ pub(crate) fn write_artifact(
 
 fn poster(data: &RepositoryAnalytics, p: Palette) -> String {
     let r = &data.repository;
+    let selection = r.selection_labels();
+    let selected = !selection.is_empty();
     let mut body = text(64, 70, 20, p.accent, "GIT WRAPPED");
     body += &text(64, 138, 48, p.fg, &fit_text(&r.name, 1072, 48));
     body += &text(
@@ -307,27 +309,71 @@ fn poster(data: &RepositoryAnalytics, p: Palette) -> String {
             }
         ),
     );
+    for (i, label) in selection.iter().enumerate() {
+        body += &text(
+            64,
+            207 + i as u32 * 20,
+            16,
+            p.muted,
+            &fit_text(label, 1072, 16),
+        );
+    }
     body += &text(
         64,
-        244,
+        if selected { 295 } else { 244 },
         18,
         p.muted,
         "GROWTH  ·  PEOPLE  ·  RHYTHM  ·  AWARDS",
     );
 
     for (i, (value, label)) in [
-        (r.total_commits.to_string(), "Commits"),
-        (r.total_contributors.to_string(), "Contributors"),
+        (
+            r.total_commits.to_string(),
+            if selected {
+                "Selected commits"
+            } else {
+                "Commits"
+            },
+        ),
+        (
+            r.total_contributors.to_string(),
+            if selected {
+                "Selected contributors"
+            } else {
+                "Contributors"
+            },
+        ),
         (r.tracked_files.to_string(), "Tracked files at HEAD"),
-        (r.age_days.to_string(), "Days of history"),
-        (format!("+{}", r.additions), "Lifetime additions"),
-        (format!("−{}", r.deletions), "Lifetime deletions"),
+        (
+            r.age_days.to_string(),
+            if selected {
+                "Selected span (days)"
+            } else {
+                "Days of history"
+            },
+        ),
+        (
+            format!("+{}", r.additions),
+            if selected {
+                "Selected additions"
+            } else {
+                "Lifetime additions"
+            },
+        ),
+        (
+            format!("−{}", r.deletions),
+            if selected {
+                "Selected deletions"
+            } else {
+                "Lifetime deletions"
+            },
+        ),
     ]
     .iter()
     .enumerate()
     {
         let x = 64 + (i % 3) as u32 * 365;
-        let y = 322 + (i / 3) as u32 * 103;
+        let y = if selected { 355 } else { 322 } + (i / 3) as u32 * 103;
         body += &text(x, y, 34, p.fg, value);
         body += &text(x, y + 28, 17, p.muted, label);
     }
@@ -518,7 +564,11 @@ fn poster(data: &RepositoryAnalytics, p: Palette) -> String {
         1553,
         16,
         p.muted,
-        "Lifetime additions/deletions count historical changed lines, not current file size.",
+        if selected {
+            "Selected additions/deletions count changed lines in selected commits, not current file size."
+        } else {
+            "Lifetime additions/deletions count historical changed lines, not current file size."
+        },
     );
     svg(1600, p.bg, &body)
 }

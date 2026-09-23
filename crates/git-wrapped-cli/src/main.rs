@@ -467,8 +467,14 @@ fn run(cli: Cli) -> Result<(), String> {
         };
         render_report_with_options(&data, &cli.output, theme, !cli.no_png)?;
         println!("Git Wrapped: {}", safe(&data.repository.name));
+        let selection = data.repository.selection_labels();
+        let selected = !selection.is_empty();
+        if selected {
+            println!("Selection: {}", safe(&selection.join(" · ")));
+        }
         println!(
-            "{} commit{} · {} contributor{}",
+            "{}{} commit{} · {} contributor{}",
+            if selected { "Selected " } else { "" },
             data.repository.total_commits,
             if data.repository.total_commits == 1 {
                 ""
@@ -483,10 +489,13 @@ fn run(cli: Cli) -> Result<(), String> {
             }
         );
         println!(
-            "{} lifetime additions · {} lifetime deletions · {} net historical lines",
+            "{} {} additions · {} {} deletions · {} net {} lines",
             data.repository.additions,
+            if selected { "selected" } else { "lifetime" },
             data.repository.deletions,
-            data.repository.net_historical_lines
+            if selected { "selected" } else { "lifetime" },
+            data.repository.net_historical_lines,
+            if selected { "selected" } else { "historical" }
         );
         let mut contributors: Vec<_> = data.contributors.iter().collect();
         contributors.sort_by(|a, b| b.commits.cmp(&a.commits).then_with(|| a.id.cmp(&b.id)));

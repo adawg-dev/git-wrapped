@@ -230,6 +230,84 @@ fn cli_global_selection_applies_to_export_and_views() {
 }
 
 #[test]
+fn filtered_report_labels_selected_totals_and_active_selection() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("b", b"two\n", "b@x", "2024-01-02T10:00:00 +0000");
+    let out = tempdir();
+    let output = out.path().join("selected");
+    let selected = [
+        "--since".as_ref(),
+        "2024-01-01".as_ref(),
+        "--until".as_ref(),
+        "2024-01-01".as_ref(),
+        "--author".as_ref(),
+        "a@x".as_ref(),
+        "--timezone".as_ref(),
+        "utc".as_ref(),
+        "--no-merges".as_ref(),
+    ];
+    let mut report_args = selected.to_vec();
+    report_args.extend(["--no-png".as_ref(), "--output".as_ref(), output.as_os_str()]);
+    let report = cli(&report_args, f.dir.path());
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&report.stdout);
+    assert!(
+        stdout.contains("Selected 1 commit · 1 contributor"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("selected additions"), "{stdout}");
+    for label in [
+        "Since 2024-01-01",
+        "Until 2024-01-01",
+        "Authors: a@x",
+        "Timezone: utc",
+        "Merges excluded",
+    ] {
+        assert!(stdout.contains(label), "missing {label}: {stdout}");
+    }
+
+    let svg = fs::read_to_string(output.join("summary.svg")).unwrap();
+    for label in [
+        "Selected commits",
+        "Selected contributors",
+        "Selected additions",
+        "Selected deletions",
+        "Since 2024-01-01",
+        "Until 2024-01-01",
+        "Authors: a@x",
+        "Timezone: utc",
+        "Merges excluded",
+    ] {
+        assert!(svg.contains(label), "missing {label}");
+    }
+    assert!(!svg.contains("Lifetime additions"));
+
+    let mut export_args = selected.to_vec();
+    export_args.push("export".as_ref());
+    let export = cli(&export_args, f.dir.path());
+    assert!(
+        export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&export.stdout).unwrap();
+    assert_eq!(json["repository"]["total_commits"], 1);
+    assert_eq!(json["repository"]["selected_since"], "2024-01-01");
+    assert_eq!(json["repository"]["selected_until"], "2024-01-01");
+    assert_eq!(
+        json["repository"]["selected_authors"],
+        serde_json::json!(["a@x"])
+    );
+    assert_eq!(json["repository"]["timezone"], "utc");
+    assert_eq!(json["repository"]["include_merges"], false);
+}
+
+#[test]
 fn config_timezone_applies_unless_cli_overrides_it() {
     let f = Fixture::new();
     f.commit("late", b"late\n", "a@x", "2024-01-01T23:30:00 -0800");
