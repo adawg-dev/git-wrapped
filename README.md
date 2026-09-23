@@ -23,8 +23,8 @@ git-wrapped
 The installed binary also accepts an explicit path:
 
 ```sh
-git-wrapped [PATH] [--output DIR] [--theme dark|light] [--no-png] [--no-cache]
-git-wrapped report [PATH] [--output DIR] [--theme dark|light] [--no-png] [--no-cache]
+git-wrapped [PATH] [--output DIR] [--theme dark|light] [--no-png] [--no-cache] [--verbose]
+git-wrapped report [PATH] [--output DIR] [--theme dark|light] [--no-png] [--no-cache] [--verbose]
 git-wrapped export --format json [PATH]
 git-wrapped contributors [--by commits|additions|deletions|churn|net|files|active-days] [PATH]
 git-wrapped contributor <ID-OR-NAME> [PATH]
@@ -67,6 +67,8 @@ git-wrapped-report/
 The four original award cards are always present; an ineligible award displays “No eligible winner.” JSON contains repository, contributor, commit, activity, heatmap, and eligible award records. The summary and charts use the same analytics as JSON. The PNG is rasterized from `summary.svg` with bundled Lato Regular under the [SIL Open Font License](crates/git-wrapped-cli/assets/OFL.txt); other glyphs may use a fallback in SVG viewers, while unsupported glyphs may be absent from the PNG. PNG generation uses a maximum scale of 4 and a 64 million pixel limit.
 
 Reports reuse `.git-wrapped-cache.json` when the canonical repository path, HEAD commit, shallow history boundary, mailmap inputs, tag refs, config, and analysis selection are identical. A repeat run says `Using cached analysis` on stderr. A stale, corrupt, or oversized cache is recomputed. `--no-cache` forces a fresh analysis; `export` bypasses the cache and creates no report directory. Cache write failures warn on stderr while the report still succeeds.
+
+Long scans show coarse progress on stderr when stderr is a terminal; `--verbose` enables it when output is redirected. Export keeps stdout as JSON. Press Ctrl+C to cancel a scan (exit code 130); cancellation before rendering leaves no report files from that run.
 
 ## What the numbers mean
 

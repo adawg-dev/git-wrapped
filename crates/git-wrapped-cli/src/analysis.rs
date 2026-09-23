@@ -1,12 +1,13 @@
 use crate::{
     awards::select_awards,
     config::{normalize, Config},
-    git::{head_paths, reachable_tag_dates, scan, tree_file_count, Repository},
+    git::{head_paths, reachable_tag_dates, scan_with_cancel, tree_file_count, Repository},
     model::{
         Activity, ActivityCell, CommitRecord, CommitSummary, ContributorAnalytics,
         DirectoryAnalytics, ExtensionAnalytics, FileAnalytics, Insights, Overlap, Peak,
         RepositoryAnalytics, RepositoryMetadata, TagDate, TreeSample, WordCount,
     },
+    progress::CancelFlag,
 };
 use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Timelike};
 use chrono_tz::Tz;
@@ -505,6 +506,16 @@ pub fn analyze_with_options(
     config: &Config,
     options: &AnalysisOptions,
 ) -> Result<RepositoryAnalytics, String> {
+    analyze_with_options_and_cancel(repo, config, options, &CancelFlag::default())
+}
+
+pub fn analyze_with_options_and_cancel(
+    repo: &Repository,
+    config: &Config,
+    options: &AnalysisOptions,
+    cancel: &CancelFlag,
+) -> Result<RepositoryAnalytics, String> {
+    cancel.check()?;
     if options
         .since
         .zip(options.until)
@@ -559,7 +570,7 @@ pub fn analyze_with_options(
     let mut deletions = 0;
     let mut excluded_changes = 0;
 
-    scan(repo, |raw| {
+    scan_with_cancel(repo, cancel, |raw| {
         let author_time = DateTime::parse_from_rfc3339(&raw.author_time)
             .map_err(|e| format!("invalid author time for {}: {e}", raw.sha))?;
         let (id, name) = normalize(&raw.mapped_author, config);
@@ -740,6 +751,7 @@ pub fn analyze_with_options(
         Ok(())
     })?;
 
+    cancel.check()?;
     let (first, latest) = first
         .zip(latest)
         .ok_or("repository has no selected commits")?;
@@ -962,12 +974,14 @@ pub fn analyze_with_options(
         .iter()
         .map(|commit| commit.sha.as_str())
         .collect();
+    cancel.check()?;
     let tags: Vec<_> = reachable_tag_dates(repo)?
         .into_iter()
         .filter(|tag| selected_shas.contains(tag.target_sha.as_str()))
         .collect();
     result.insights = derive_insights(&result, &tags)?;
     result.awards = select_awards(&result);
+    cancel.check()?;
     Ok(result)
 }
 

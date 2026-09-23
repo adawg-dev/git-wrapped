@@ -1,4 +1,5 @@
 use crate::model::{FileChange, Identity, RawCommit, TagDate};
+use crate::progress::CancelFlag;
 use chrono::DateTime;
 use std::{
     ffi::{OsStr, OsString},
@@ -305,8 +306,17 @@ fn parse<R: BufRead>(
 
 pub fn scan(
     repo: &Repository,
+    visit: impl FnMut(RawCommit) -> Result<(), String>,
+) -> Result<(), String> {
+    scan_with_cancel(repo, &CancelFlag::default(), visit)
+}
+
+pub fn scan_with_cancel(
+    repo: &Repository,
+    cancel: &CancelFlag,
     mut visit: impl FnMut(RawCommit) -> Result<(), String>,
 ) -> Result<(), String> {
+    cancel.check()?;
     let mut child = Command::new("git")
         .arg("-C")
         .arg(&repo.root)
@@ -329,12 +339,16 @@ pub fn scan(
         .map_err(|e| format!("cannot run git log: {e}"))?;
     let result = parse(
         &mut BufReader::new(child.stdout.take().unwrap()),
-        &mut visit,
+        &mut |commit| {
+            cancel.check()?;
+            visit(commit)
+        },
     );
-    if result.is_err() {
+    if result.is_err() || cancel.is_cancelled() {
         let _ = child.kill();
     }
     let status = child.wait().map_err(|e| e.to_string())?;
+    cancel.check()?;
     result?;
     if !status.success() {
         return Err(format!("git log exited with {status}"));

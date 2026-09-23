@@ -6,7 +6,8 @@ use git_wrapped::analysis::{
 };
 use git_wrapped::awards::select_awards;
 use git_wrapped::config::{normalize, Config};
-use git_wrapped::git::{discover, reachable_tag_dates, scan};
+use git_wrapped::git::{discover, reachable_tag_dates, scan, scan_with_cancel};
+use git_wrapped::progress::CancelFlag;
 use std::{fs, process::Command};
 
 #[test]
@@ -1270,7 +1271,7 @@ fn explicit_repo_creates_first_report() {
     assert!(stdout.contains("1 commit · 1 contributor"));
     assert!(stdout.contains("lifetime additions"));
     assert!(stdout.contains(output.to_str().unwrap()));
-    assert!(String::from_utf8_lossy(&result.stderr).contains("Analyzing Git history"));
+    assert!(result.stderr.is_empty());
 }
 
 #[test]
@@ -1400,6 +1401,45 @@ fn export_is_valid_json_only() {
     let data: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(data["repository"]["total_commits"], 1);
     assert!(!f.dir.path().join("git-wrapped-report").exists());
+}
+
+#[test]
+fn cancelled_scan_returns_before_visiting_commits() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let flag = CancelFlag::default();
+    flag.cancel();
+    let mut visited = false;
+    let result = scan_with_cancel(&discover(f.dir.path()).unwrap(), &flag, |_| {
+        visited = true;
+        Ok(())
+    });
+    assert!(result.unwrap_err().contains("cancelled"));
+    assert!(!visited);
+}
+
+#[test]
+fn verbose_export_keeps_progress_off_stdout() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let normal = cli(&["export".as_ref()], f.dir.path());
+    assert!(normal.status.success());
+    assert!(!String::from_utf8_lossy(&normal.stderr).contains("Progress:"));
+    let verbose = cli(&["--verbose".as_ref(), "export".as_ref()], f.dir.path());
+    assert!(verbose.status.success());
+    assert!(verbose.stdout.starts_with(b"{"));
+    assert!(!String::from_utf8_lossy(&verbose.stdout).contains("Progress:"));
+    assert!(String::from_utf8_lossy(&verbose.stderr).contains("Progress:"));
 }
 
 #[test]

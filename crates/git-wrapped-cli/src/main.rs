@@ -1,12 +1,14 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand, ValueEnum};
 use git_wrapped::{
     analysis::{
-        activity_by_day, activity_by_month, analyze_with_options, AnalysisOptions, TimezoneChoice,
+        activity_by_day, activity_by_month, analyze_with_options_and_cancel, AnalysisOptions,
+        TimezoneChoice,
     },
     cache,
     config::Config,
     git::discover,
     model::RepositoryAnalytics,
+    progress::{CancelFlag, Progress},
     render::{render_report_with_options, Theme},
 };
 use std::{
@@ -44,6 +46,8 @@ struct Cli {
     no_png: bool,
     #[arg(long, global = true)]
     no_cache: bool,
+    #[arg(long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Option<CommandArg>,
 }
@@ -379,6 +383,9 @@ fn print_view(data: &RepositoryAnalytics, view: View, out: &mut impl Write) -> R
 }
 
 fn run(cli: Cli) -> Result<(), String> {
+    let cancel = CancelFlag::default();
+    cancel.install_ctrlc()?;
+    let progress = Progress::new(cli.verbose);
     let (repository, export, view) = match cli.command {
         None => (
             cli.repository.unwrap_or_else(|| PathBuf::from(".")),
@@ -473,11 +480,10 @@ fn run(cli: Cli) -> Result<(), String> {
         eprintln!("Using cached analysis");
         data
     } else {
-        if !export {
-            eprintln!("Analyzing Git history...");
-        }
-        analyze_with_options(&repo, &config, &options)?
+        progress.phase("Scanning Git history", None, None);
+        analyze_with_options_and_cancel(&repo, &config, &options, &cancel)?
     };
+    cancel.check()?;
     if repo.shallow {
         eprintln!("Warning: shallow repository; historical totals cover available history only.");
     }
@@ -492,6 +498,7 @@ fn run(cli: Cli) -> Result<(), String> {
         let stdout = io::stdout();
         print_view(&data, view, &mut stdout.lock())?;
     } else {
+        progress.phase("Writing report", None, None);
         let theme = match cli.theme {
             ThemeArg::Dark => Theme::Dark,
             ThemeArg::Light => Theme::Light,
@@ -576,7 +583,11 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {}", safe(&error));
-            ExitCode::FAILURE
+            if error == "cancelled" {
+                ExitCode::from(130)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
