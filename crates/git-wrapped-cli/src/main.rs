@@ -4,7 +4,7 @@ use git_wrapped::{
     config::Config,
     git::discover,
     model::RepositoryAnalytics,
-    render::{render_report, Theme},
+    render::{render_report_with_options, Theme},
 };
 use std::{
     collections::BTreeMap,
@@ -25,6 +25,8 @@ struct Cli {
     output: PathBuf,
     #[arg(long, value_enum, default_value_t = ThemeArg::Dark, global = true)]
     theme: ThemeArg,
+    #[arg(long, global = true)]
+    no_png: bool,
     #[command(subcommand)]
     command: Option<CommandArg>,
 }
@@ -428,7 +430,7 @@ fn run(cli: Cli) -> Result<(), String> {
             ThemeArg::Dark => Theme::Dark,
             ThemeArg::Light => Theme::Light,
         };
-        render_report(&data, &cli.output, theme)?;
+        render_report_with_options(&data, &cli.output, theme, !cli.no_png)?;
         println!("Git Wrapped: {}", safe(&data.repository.name));
         println!(
             "{} commit{} · {} contributor{}",

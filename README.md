@@ -1,6 +1,6 @@
 # Git Wrapped
 
-Git Wrapped reads a local repository's HEAD-reachable Git history and writes a shareable SVG report and deterministic JSON data. It needs Rust and Git; no hosting account or repository scripts are required.
+Git Wrapped reads a local repository's HEAD-reachable Git history and writes a shareable SVG report, a PNG poster, and deterministic JSON data. It needs Rust and Git; no hosting account or repository scripts are required.
 
 ## Build and run
 
@@ -23,8 +23,8 @@ git-wrapped
 The installed binary also accepts an explicit path:
 
 ```sh
-git-wrapped [PATH] [--output DIR] [--theme dark|light]
-git-wrapped report [PATH] [--output DIR] [--theme dark|light]
+git-wrapped [PATH] [--output DIR] [--theme dark|light] [--no-png]
+git-wrapped report [PATH] [--output DIR] [--theme dark|light] [--no-png]
 git-wrapped export --format json [PATH]
 git-wrapped contributors [--by commits|additions|deletions|churn|net|files|active-days] [PATH]
 git-wrapped contributor <ID-OR-NAME> [PATH]
@@ -34,25 +34,36 @@ git-wrapped awards [PATH]
 git-wrapped top commits|additions|deletions|churn|files [PATH]
 ```
 
-`PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Export writes JSON to stdout; report commands write files and print a short summary. Focused commands print text, with up to 20 rows per list. `contributors` defaults to commits; `top` is a shortcut for its five named rankings, including `top files` for contributors by distinct files touched. `contributor` accepts an exact ID or a unique case-insensitive display name. `activity` defaults to month and shows the latest 20 periods. `archaeology` ranks changed paths by historical churn and marks paths absent from HEAD as historical. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
+`PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Reports write `summary.png` at 2400×3200 by default; `--no-png` skips PNG generation (an earlier PNG in the same output directory is left alone). Export writes JSON to stdout; report commands write files and print a short summary. Focused commands print text, with up to 20 rows per list. `contributors` defaults to commits; `top` is a shortcut for its five named rankings, including `top files` for contributors by distinct files touched. `contributor` accepts an exact ID or a unique case-insensitive display name. `activity` defaults to month and shows the latest 20 periods. `archaeology` ranks changed paths by historical churn and marks paths absent from HEAD as historical. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
 
 ## Report files
 
 ```text
 git-wrapped-report/
 ├── summary.svg
+├── summary.png
+├── commits-over-time.svg
+├── additions-deletions.svg
+├── rhythm.svg
+├── highlights.svg
+├── contributor-mix.svg
+├── file-churn.svg
+├── directories.svg
 ├── contributors.svg
 ├── activity.svg
 ├── activity-heatmap.svg
+├── contributors/<stable-id>.svg
 ├── awards/
 │   ├── commit-machine.svg
 │   ├── code-creator.svg
 │   ├── code-destroyer.svg
-│   └── night-owl.svg
+│   ├── night-owl.svg
+│   └── <eligible-award>.svg
+├── card-manifest.json
 └── data.json
 ```
 
-The four award cards are always present; an ineligible award displays “No eligible winner.” JSON contains repository, contributor, commit, activity, heatmap, and eligible award records. The summary and charts use the same analytics as JSON.
+The four original award cards are always present; an ineligible award displays “No eligible winner.” JSON contains repository, contributor, commit, activity, heatmap, and eligible award records. The summary and charts use the same analytics as JSON. The PNG is rasterized from `summary.svg` with bundled Lato Regular under the [SIL Open Font License](crates/git-wrapped-cli/assets/OFL.txt); other glyphs may use a fallback in SVG viewers, while unsupported glyphs may be absent from the PNG. PNG generation uses a maximum scale of 4 and a 64 million pixel limit.
 
 ## What the numbers mean
 
@@ -83,4 +94,4 @@ Shallow clones still work, but a warning says historical totals cover **availabl
 
 ## Scope
 
-The current release produces SVG, JSON, and focused terminal views. Ownership, surviving LOC, PNG, caching, a terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.
+The current release produces SVG, PNG, JSON, and focused terminal views. Ownership, surviving LOC, caching, a terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.

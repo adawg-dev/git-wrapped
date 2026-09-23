@@ -1,4 +1,5 @@
 use crate::model::{Activity, RepositoryAnalytics};
+pub mod raster;
 use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 use std::{
     collections::BTreeMap,
@@ -65,7 +66,7 @@ fn escape_xml(value: &str) -> String {
 }
 
 fn text(x: u32, y: u32, size: u32, color: &str, value: &str) -> String {
-    format!("<text x=\"{x}\" y=\"{y}\" font-family=\"system-ui,sans-serif\" font-size=\"{size}\" fill=\"{color}\">{}</text>", escape_xml(value))
+    format!("<text x=\"{x}\" y=\"{y}\" font-family=\"Lato,system-ui,sans-serif\" font-size=\"{size}\" fill=\"{color}\">{}</text>", escape_xml(value))
 }
 
 fn short(value: &str, limit: usize) -> String {
@@ -808,6 +809,16 @@ pub fn render_report(
     output: &Path,
     theme: Theme,
 ) -> Result<(), String> {
+    render_report_with_options(data, output, theme, true)
+}
+
+/// Write the fixed report artifacts, optionally including the 2× PNG poster.
+pub fn render_report_with_options(
+    data: &RepositoryAnalytics,
+    output: &Path,
+    theme: Theme,
+    png: bool,
+) -> Result<(), String> {
     checked_directory(output)?;
     let previous_cards = previous_cards(output);
     let mut current_cards = BTreeMap::new();
@@ -824,7 +835,12 @@ pub fn render_report(
     let r = &data.repository;
     let heading =
         |title: &str| text(64, 66, 18, accent, "GIT WRAPPED") + &text(64, 125, 42, fg, title);
-    write_artifact(output, "summary.svg", poster(data, palette).as_bytes())?;
+    let summary = poster(data, palette);
+    write_artifact(output, "summary.svg", summary.as_bytes())?;
+    if png {
+        let bytes = raster::rasterize(&summary, 2)?;
+        write_artifact(output, "summary.png", &bytes)?;
+    }
     for (name, page) in [
         ("commits-over-time.svg", commits_over_time(data, palette)),
         (

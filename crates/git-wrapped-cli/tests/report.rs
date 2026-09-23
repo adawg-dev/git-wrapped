@@ -555,6 +555,7 @@ fn explicit_repo_creates_first_report() {
             "file-churn.svg",
             "highlights.svg",
             "rhythm.svg",
+            "summary.png",
             "summary.svg"
         ]
     );
@@ -564,6 +565,67 @@ fn explicit_repo_creates_first_report() {
     assert!(stdout.contains("lifetime additions"));
     assert!(stdout.contains(output.to_str().unwrap()));
     assert!(String::from_utf8_lossy(&result.stderr).contains("Analyzing Git history"));
+}
+
+#[test]
+fn summary_png_is_real_scaled_and_optional() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let png = fs::read(out.path().join("summary.png")).unwrap();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 2400);
+    assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 3200);
+
+    let no_png = tempdir();
+    let result = cli(
+        &[
+            f.dir.path().as_os_str(),
+            "--output".as_ref(),
+            no_png.path().as_os_str(),
+            "--no-png".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!no_png.path().join("summary.png").exists());
+    assert!(no_png.path().join("summary.svg").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn summary_png_symlink_target_is_rejected() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    let protected = tempfile::NamedTempFile::new().unwrap();
+    fs::write(protected.path(), "untouched").unwrap();
+    let out = tempdir();
+    std::os::unix::fs::symlink(protected.path(), out.path().join("summary.png")).unwrap();
+    assert!(git_wrapped::render::render_report(
+        &data,
+        out.path(),
+        git_wrapped::render::Theme::Dark
+    )
+    .is_err());
+    assert_eq!(fs::read_to_string(protected.path()).unwrap(), "untouched");
 }
 
 #[test]
