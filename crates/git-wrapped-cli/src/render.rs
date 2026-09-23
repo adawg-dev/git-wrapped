@@ -1,6 +1,7 @@
 use crate::model::{Activity, RepositoryAnalytics};
 use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
     path::{Component, Path},
@@ -73,6 +74,102 @@ fn short(value: &str, limit: usize) -> String {
         s.push('…');
     }
     s
+}
+
+// One em per Unicode scalar is conservative for system-ui, including wide capitals.
+fn fit_text(value: &str, width: u32, size: u32) -> String {
+    let max_chars = (width / size).max(1) as usize;
+    if value.chars().count() <= max_chars {
+        value.to_owned()
+    } else {
+        short(value, max_chars - 1)
+    }
+}
+
+fn contributor_card_names(mut people: Vec<(String, u64)>) -> BTreeMap<String, String> {
+    people.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    people.truncate(20);
+    people.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut collisions = BTreeMap::<String, usize>::new();
+    people
+        .into_iter()
+        .map(|(id, _)| {
+            let prefix = id
+                .as_bytes()
+                .iter()
+                .take(8)
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let next = collisions.entry(prefix.clone()).or_default();
+            *next += 1;
+            let name = if *next == 1 {
+                prefix
+            } else {
+                format!("{prefix}-{next}")
+            };
+            (id, name)
+        })
+        .collect()
+}
+
+fn valid_award_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn previous_card_names(output: &Path) -> BTreeSet<String> {
+    let path = output.join("data.json");
+    if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+        return BTreeSet::new();
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return BTreeSet::new();
+    };
+    let Ok(data) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return BTreeSet::new();
+    };
+    let people = data["contributors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| Some((c["id"].as_str()?.to_owned(), c["commits"].as_u64()?)))
+        .collect();
+    let mut names: BTreeSet<_> = contributor_card_names(people)
+        .into_values()
+        .map(|name| format!("contributors/{name}.svg"))
+        .collect();
+    for slug in data["awards"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a["slug"].as_str())
+        .filter(|slug| valid_award_slug(slug))
+    {
+        names.insert(format!("awards/{slug}.svg"));
+    }
+    names
+}
+
+fn remove_stale_card(output: &Path, name: &str) -> Result<(), String> {
+    let path = output.join(name);
+    if let Some(parent) = path.parent() {
+        checked_directory(parent)?;
+    }
+    let Ok(meta) = fs::symlink_metadata(&path) else {
+        return Ok(());
+    };
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let Ok(contents) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    if contents.starts_with("<svg") && contents.contains(">GIT WRAPPED</text>") {
+        fs::remove_file(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn svg(height: u32, background: &str, body: &str) -> String {
@@ -169,7 +266,7 @@ pub(crate) fn write_artifact(
 fn poster(data: &RepositoryAnalytics, p: Palette) -> String {
     let r = &data.repository;
     let mut body = text(64, 70, 20, p.accent, "GIT WRAPPED");
-    body += &text(64, 138, 48, p.fg, &short(&r.name, 38));
+    body += &text(64, 138, 48, p.fg, &fit_text(&r.name, 1072, 48));
     body += &text(
         64,
         182,
@@ -689,6 +786,9 @@ pub fn render_report(
     output: &Path,
     theme: Theme,
 ) -> Result<(), String> {
+    checked_directory(output)?;
+    let previous_cards = previous_card_names(output);
+    let mut current_cards = BTreeSet::new();
     let palette = theme.palette();
     let (bg, fg, accent, muted) = (palette.bg, palette.fg, palette.accent, palette.muted);
     let write = |name: &str, height, body: String| -> Result<(), String> {
@@ -725,7 +825,7 @@ pub fn render_report(
         .max(1) as f64;
     for (i, c) in data.contributors.iter().take(10).enumerate() {
         let y = 195 + i as u32 * 54;
-        body += &text(64, y + 22, 19, fg, &short(&c.name, 23));
+        body += &text(64, y + 22, 19, fg, &fit_text(&c.name, 265, 19));
         body += &rect(
             345.0,
             y as f64,
@@ -785,7 +885,20 @@ pub fn render_report(
             fg,
             &format!(
                 "{} · {} commits ({:.1}%)",
-                short(&c.name, 39),
+                fit_text(
+                    &c.name,
+                    1042_u32.saturating_sub(
+                        format!(
+                            " · {} commits ({:.1}%)",
+                            c.commits,
+                            c.commits as f64 / total * 100.0
+                        )
+                        .chars()
+                        .count() as u32
+                            * 18,
+                    ),
+                    18,
+                ),
                 c.commits,
                 c.commits as f64 / total * 100.0
             ),
@@ -838,7 +951,17 @@ pub fn render_report(
             &format!(
                 "{}. {} · {} lines · {status}",
                 i + 1,
-                short(&file.display_path, 68),
+                fit_text(
+                    &file.display_path,
+                    1072_u32.saturating_sub(
+                        (format!("{}. ", i + 1).chars().count()
+                            + format!(" · {} lines · {status}", file.churn)
+                                .chars()
+                                .count()) as u32
+                            * 18,
+                    ),
+                    18,
+                ),
                 file.churn
             ),
         );
@@ -882,7 +1005,20 @@ pub fn render_report(
             &format!(
                 "{}. {} · {} lines · {} commits · {} current files",
                 i + 1,
-                short(&dir.display_path, 46),
+                fit_text(
+                    &dir.display_path,
+                    1072_u32.saturating_sub(
+                        (format!("{}. ", i + 1).chars().count()
+                            + format!(
+                                " · {} lines · {} commits · {} current files",
+                                dir.churn, dir.commits, dir.current_file_count
+                            )
+                            .chars()
+                            .count()) as u32
+                            * 18,
+                    ),
+                    18,
+                ),
                 dir.churn,
                 dir.commits,
                 dir.current_file_count
@@ -913,23 +1049,16 @@ pub fn render_report(
 
     let mut top_people: Vec<_> = people.into_iter().take(20).collect();
     top_people.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut card_names = std::collections::BTreeMap::<String, usize>::new();
+    let card_names = contributor_card_names(
+        data.contributors
+            .iter()
+            .map(|c| (c.id.clone(), c.commits))
+            .collect(),
+    );
     for c in top_people {
-        let prefix =
-            c.id.as_bytes()
-                .iter()
-                .take(8)
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-        let next = card_names.entry(prefix.clone()).or_default();
-        *next += 1;
-        let name = if *next == 1 {
-            prefix
-        } else {
-            format!("{prefix}-{next}")
-        };
-        let mut body = heading(&short(&c.name, 42));
-        body += &text(64, 174, 18, muted, &short(&c.id, 65));
+        let name = &card_names[&c.id];
+        let mut body = heading(&fit_text(&c.name, 1072, 42));
+        body += &text(64, 174, 18, muted, &fit_text(&c.id, 1072, 18));
         for (i, (label, value)) in [
             ("Commits", c.commits.to_string()),
             ("Lines added", c.additions.to_string()),
@@ -970,7 +1099,9 @@ pub fn render_report(
                 c.latest_contribution.split('T').next().unwrap_or("")
             ),
         );
-        write(&format!("contributors/{name}.svg"), 800, body)?;
+        let path = format!("contributors/{name}.svg");
+        write(&path, 800, body)?;
+        current_cards.insert(path);
     }
 
     let mut body = heading("Every month tells a story");
@@ -1092,34 +1223,29 @@ pub fn render_report(
     .into_iter()
     .collect();
     for award in &data.awards {
-        if !award.slug.is_empty()
-            && award
-                .slug
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        {
+        if valid_award_slug(&award.slug) {
             award_cards.insert(&award.slug, &award.title);
         } else {
             return Err(format!("invalid award slug: {}", award.slug));
         }
     }
     for (slug, title) in award_cards {
-        let mut body = heading(title);
-        body += &text(64, 185, 20, muted, &short(&r.name, 60));
+        let mut body = heading(&fit_text(title, 1072, 42));
+        body += &text(64, 185, 20, muted, &fit_text(&r.name, 1072, 20));
         if let Some(a) = data.awards.iter().find(|a| a.slug == slug) {
-            body += &text(64, 310, 52, fg, &short(&a.winner, 32));
+            body += &text(64, 310, 52, fg, &fit_text(&a.winner, 1072, 52));
             body += &text(
                 64,
                 391,
                 32,
                 accent,
-                &short(&format!("{} · {}", a.value, a.metric), 58),
+                &fit_text(&format!("{} · {}", a.value, a.metric), 1072, 32),
             );
             for (i, line) in a
                 .explanation
                 .chars()
                 .collect::<Vec<_>>()
-                .chunks(80)
+                .chunks(1072 / 21)
                 .take(3)
                 .enumerate()
             {
@@ -1134,12 +1260,18 @@ pub fn render_report(
         } else {
             body += &text(64, 310, 44, fg, "No eligible winner");
         }
-        write(&format!("awards/{slug}.svg"), 675, body)?;
+        let path = format!("awards/{slug}.svg");
+        write(&path, 675, body)?;
+        current_cards.insert(path);
     }
     let mut json =
         serde_json::to_vec_pretty(data).map_err(|e| format!("serialize data.json: {e}"))?;
     json.push(b'\n');
-    write_artifact(output, "data.json", &json)
+    write_artifact(output, "data.json", &json)?;
+    for name in previous_cards.difference(&current_cards) {
+        remove_stale_card(output, name)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

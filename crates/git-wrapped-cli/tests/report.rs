@@ -1699,6 +1699,119 @@ fn gallery_cards_are_stable_and_paths_are_fixed() {
 }
 
 #[test]
+fn rerender_removes_only_stale_generated_cards() {
+    use git_wrapped::render::{render_report, Theme};
+    let mut data = cross_offset_data();
+    data.contributors[0].id = "alpha@x".into();
+    let mut other = data.contributors[0].clone();
+    other.id = "beta@x".into();
+    data.contributors.push(other);
+    #[cfg(unix)]
+    {
+        let mut linked = data.contributors[0].clone();
+        linked.id = "gamma@x".into();
+        data.contributors.push(linked);
+    }
+    data.awards.push(git_wrapped::model::Award {
+        slug: "repo-explorer".into(),
+        title: "Repo Explorer".into(),
+        winner_id: "beta@x".into(),
+        winner: "Beta".into(),
+        metric: "files touched".into(),
+        value: "1".into(),
+        explanation: "One file".into(),
+    });
+    let out = tempdir();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    let stale_contributor = out.path().join("contributors/626574614078.svg");
+    let stale_award = out.path().join("awards/repo-explorer.svg");
+    assert!(stale_contributor.exists() && stale_award.exists());
+    fs::write(out.path().join("contributors/notes.svg"), "keep").unwrap();
+    fs::write(out.path().join("awards/notes.svg"), "keep").unwrap();
+    #[cfg(unix)]
+    {
+        let target = out.path().join("target.txt");
+        fs::write(&target, "keep").unwrap();
+        std::os::unix::fs::symlink(&target, out.path().join("contributors/linked.svg")).unwrap();
+        let generated_link = out.path().join("contributors/67616d6d614078.svg");
+        fs::remove_file(&generated_link).unwrap();
+        std::os::unix::fs::symlink(&target, generated_link).unwrap();
+    }
+    data.contributors.pop();
+    #[cfg(unix)]
+    data.contributors.pop();
+    data.awards.clear();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    assert!(!stale_contributor.exists());
+    assert!(!stale_award.exists());
+    assert!(out.path().join("contributors/616c7068614078.svg").exists());
+    assert!(out.path().join("awards/commit-machine.svg").exists());
+    assert_eq!(
+        fs::read_to_string(out.path().join("contributors/notes.svg")).unwrap(),
+        "keep"
+    );
+    assert_eq!(
+        fs::read_to_string(out.path().join("awards/notes.svg")).unwrap(),
+        "keep"
+    );
+    #[cfg(unix)]
+    {
+        assert!(
+            fs::symlink_metadata(out.path().join("contributors/linked.svg"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            fs::symlink_metadata(out.path().join("contributors/67616d6d614078.svg"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(out.path().join("target.txt")).unwrap(),
+            "keep"
+        );
+    }
+}
+
+#[test]
+fn gallery_truncates_wide_labels_to_available_width() {
+    use git_wrapped::render::{render_report, Theme};
+    let mut data = cross_offset_data();
+    data.contributors[0].name = "W".repeat(100);
+    data.files[0].display_path = "W".repeat(200);
+    let out = tempdir();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    let card = fs::read_dir(out.path().join("contributors"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let card = fs::read_to_string(card).unwrap();
+    let heading = card
+        .split("y=\"125\"")
+        .nth(1)
+        .unwrap()
+        .split("</text>")
+        .next()
+        .unwrap();
+    assert!(heading.matches('W').count() <= 25, "{heading}");
+    assert!(heading.contains('…'));
+    let files = fs::read_to_string(out.path().join("file-churn.svg")).unwrap();
+    let row = files
+        .split("y=\"222\"")
+        .nth(1)
+        .unwrap()
+        .split("</text>")
+        .next()
+        .unwrap();
+    assert!(row.matches('W').count() <= 40, "{row}");
+    assert!(row.contains("historical path") || row.contains("current"));
+}
+
+#[test]
 fn report_creates_nested_output_directory() {
     let data = cross_offset_data();
     let out = tempdir();
