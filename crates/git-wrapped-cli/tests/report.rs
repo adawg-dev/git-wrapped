@@ -58,6 +58,40 @@ fn focused_views_sort_and_sanitize() {
 }
 
 #[test]
+fn report_summary_names_top_contributor_peak_and_award() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("b", b"one\n", "b@x", "2024-01-02T10:00:00 +0000");
+    f.commit("c", b"one\n", "a@x", "2024-01-02T11:00:00 +0000");
+    assert!(f
+        .git(&[
+            "commit",
+            "--amend",
+            "--author",
+            "A\x1b[31m <a@x>",
+            "--no-edit"
+        ])
+        .status
+        .success());
+    for args in [vec![], vec!["report".as_ref()]] {
+        let output = cli(&args, f.dir.path());
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            text.contains("Top contributors:\n  A [31m (a@x): 2 commits\n  Test (b@x): 1 commit\n"),
+            "{text}"
+        );
+        assert!(text.contains("Peak day: 2024-01-02 (2 commits)"), "{text}");
+        assert!(text.contains("Commit Machine: A [31m"), "{text}");
+        assert!(!text.contains('\x1b'));
+    }
+}
+
+#[test]
 fn contributor_lookup_reports_ambiguous_and_missing_names() {
     let f = Fixture::new();
     f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");

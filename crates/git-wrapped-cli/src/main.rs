@@ -451,6 +451,25 @@ fn run(cli: Cli) -> Result<(), String> {
             data.repository.deletions,
             data.repository.net_historical_lines
         );
+        let mut contributors: Vec<_> = data.contributors.iter().collect();
+        contributors.sort_by(|a, b| b.commits.cmp(&a.commits).then_with(|| a.id.cmp(&b.id)));
+        println!("Top contributors:");
+        for c in contributors.iter().take(3) {
+            println!(
+                "  {} ({}): {} commit{}",
+                safe(&c.name),
+                safe(&c.id),
+                c.commits,
+                if c.commits == 1 { "" } else { "s" }
+            );
+        }
+        if let Some(peak) = &data.insights.busiest_day {
+            println!("Peak day: {} ({} commits)", safe(&peak.label), peak.count);
+        }
+        println!("Awards:");
+        for award in data.awards.iter().take(3) {
+            println!("  {}: {}", safe(&award.title), safe(&award.winner));
+        }
         println!("Report written to: {}", safe(&cli.output.to_string_lossy()));
     }
     Ok(())
