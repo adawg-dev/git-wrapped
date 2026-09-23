@@ -1,6 +1,8 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand, ValueEnum};
 use git_wrapped::{
-    analysis::{activity_by_day, activity_by_month, analyze},
+    analysis::{
+        activity_by_day, activity_by_month, analyze_with_options, AnalysisOptions, TimezoneChoice,
+    },
     config::Config,
     git::discover,
     model::RepositoryAnalytics,
@@ -21,6 +23,16 @@ use std::{
 )]
 struct Cli {
     repository: Option<PathBuf>,
+    #[arg(long, value_parser = parse_date, global = true)]
+    since: Option<chrono::NaiveDate>,
+    #[arg(long, value_parser = parse_date, global = true)]
+    until: Option<chrono::NaiveDate>,
+    #[arg(long, global = true)]
+    author: Vec<String>,
+    #[arg(long, global = true)]
+    timezone: Option<TimezoneChoice>,
+    #[arg(long, global = true)]
+    no_merges: bool,
     #[arg(long, default_value = "git-wrapped-report", global = true)]
     output: PathBuf,
     #[arg(long, value_enum, default_value_t = ThemeArg::Dark, global = true)]
@@ -158,6 +170,11 @@ fn safe(value: &str) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
+}
+
+fn parse_date(value: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map_err(|_| format!("invalid date '{value}'; use YYYY-MM-DD"))
 }
 
 fn parse() -> Result<Cli, clap::Error> {
@@ -408,10 +425,28 @@ fn run(cli: Cli) -> Result<(), String> {
     };
     let repo = discover(&repository)?;
     let config = Config::load(&repo.root)?;
+    let timezone = match cli.timezone {
+        Some(zone) => zone,
+        None => config
+            .timezone
+            .as_deref()
+            .map(str::parse::<TimezoneChoice>)
+            .transpose()
+            .map_err(|error| format!("{}: {error}", repo.root.join(".git-wrapped.json").display()))?
+            .unwrap_or_default(),
+    };
+    let options = AnalysisOptions {
+        since: cli.since,
+        until: cli.until,
+        author_ids: cli.author,
+        timezone,
+        include_merges: !cli.no_merges,
+        ..Default::default()
+    };
     if !export {
         eprintln!("Analyzing Git history...");
     }
-    let data = analyze(&repo, &config)?;
+    let data = analyze_with_options(&repo, &config, &options)?;
     if repo.shallow {
         eprintln!("Warning: shallow repository; historical totals cover available history only.");
     }

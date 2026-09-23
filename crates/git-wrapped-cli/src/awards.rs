@@ -216,6 +216,11 @@ mod tests {
         RepositoryAnalytics {
             repository: RepositoryMetadata {
                 name: String::new(),
+                selected_since: None,
+                selected_until: None,
+                selected_authors: vec![],
+                timezone: "commit".into(),
+                include_merges: true,
                 first_commit: String::new(),
                 latest_commit: String::new(),
                 age_days: 0,
@@ -226,6 +231,7 @@ mod tests {
                 net_historical_lines: 0,
                 churn: 0,
                 tracked_files: 0,
+                tracked_files_scope: "HEAD".into(),
                 shallow: false,
             },
             contributors,

@@ -192,6 +192,11 @@ pub struct Award {
 #[derive(Clone, Debug, Serialize)]
 pub struct RepositoryMetadata {
     pub name: String,
+    pub selected_since: Option<String>,
+    pub selected_until: Option<String>,
+    pub selected_authors: Vec<String>,
+    pub timezone: String,
+    pub include_merges: bool,
     pub first_commit: String,
     pub latest_commit: String,
     pub age_days: i64,
@@ -202,6 +207,7 @@ pub struct RepositoryMetadata {
     pub net_historical_lines: i64,
     pub churn: u64,
     pub tracked_files: usize,
+    pub tracked_files_scope: String,
     pub shallow: bool,
 }
 

@@ -1,6 +1,9 @@
 mod common;
 use common::{tempdir, Fixture};
-use git_wrapped::analysis::{activity_by_day, activity_by_month, analyze, sample_trees};
+use git_wrapped::analysis::{
+    activity_by_day, activity_by_month, analyze, analyze_with_options, sample_trees,
+    AnalysisOptions, TimezoneChoice,
+};
 use git_wrapped::awards::select_awards;
 use git_wrapped::config::{normalize, Config};
 use git_wrapped::git::{discover, reachable_tag_dates, scan};
@@ -12,6 +15,274 @@ fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output
         .args(args)
         .output()
         .unwrap()
+}
+
+#[test]
+fn utc_date_filter_differs_from_commit_offset_and_is_inclusive() {
+    let f = Fixture::new();
+    f.commit("early", b"early\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("late", b"late\n", "a@x", "2024-01-01T23:30:00 -0800");
+    let repo = discover(f.dir.path()).unwrap();
+    let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
+    let options = AnalysisOptions {
+        since: Some(date),
+        until: Some(date),
+        timezone: TimezoneChoice::Utc,
+        ..Default::default()
+    };
+    let selected = analyze_with_options(&repo, &Config::default(), &options).unwrap();
+    assert_eq!(selected.repository.total_commits, 1);
+    assert_eq!(selected.activity_heatmap[0].date, "2024-01-02");
+    assert_eq!(
+        selected.repository.selected_since.as_deref(),
+        Some("2024-01-02")
+    );
+    assert_eq!(selected.repository.timezone, "utc");
+    assert_eq!(selected.repository.tracked_files_scope, "HEAD");
+    let error = analyze_with_options(
+        &repo,
+        &Config::default(),
+        &AnalysisOptions {
+            timezone: TimezoneChoice::Commit,
+            ..options
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("no selected commits"), "{error}");
+}
+
+#[test]
+fn named_timezone_uses_instant_and_rejects_invalid_range() {
+    let f = Fixture::new();
+    f.commit("winter", b"one\n", "a@x", "2024-01-02T07:30:00 +0000");
+    f.commit("summer", b"two\n", "a@x", "2024-07-02T06:30:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let options = AnalysisOptions {
+        timezone: TimezoneChoice::Named("America/Los_Angeles".parse().unwrap()),
+        ..Default::default()
+    };
+    let selected = analyze_with_options(&repo, &Config::default(), &options).unwrap();
+    assert_eq!(
+        selected
+            .activity_heatmap
+            .iter()
+            .map(|cell| cell.date.as_str())
+            .collect::<Vec<_>>(),
+        ["2024-01-01", "2024-07-01"]
+    );
+    let error = analyze_with_options(
+        &repo,
+        &Config::default(),
+        &AnalysisOptions {
+            since: Some(chrono::NaiveDate::from_ymd_opt(2024, 7, 2).unwrap()),
+            until: Some(chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("until") && error.contains("since"),
+        "{error}"
+    );
+}
+
+#[test]
+fn selected_author_id_uses_mailmap_and_aliases() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "old@x", "2024-01-01T10:00:00 +0000");
+    f.commit("b", b"two\n", "other@x", "2024-01-02T10:00:00 +0000");
+    fs::write(f.dir.path().join(".mailmap"), "Team <new@x> <old@x>\n").unwrap();
+    let mut config = Config::default();
+    config
+        .insert_alias_group("Team", &["new@x", "team@x"])
+        .unwrap();
+    let data = analyze_with_options(
+        &discover(f.dir.path()).unwrap(),
+        &config,
+        &AnalysisOptions {
+            author_ids: vec!["TEAM@X".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(data.repository.total_commits, 1);
+    assert_eq!(data.contributors[0].id, "new@x");
+    assert_eq!(data.repository.selected_authors, ["new@x"]);
+}
+
+#[test]
+fn no_merges_excludes_merge_commit_but_default_counts_it() {
+    let f = Fixture::new();
+    f.commit("base", b"base\n", "a@x", "2024-01-01T10:00:00 +0000");
+    assert!(f.git(&["branch", "side"]).status.success());
+    f.commit("main", b"main\n", "a@x", "2024-01-02T10:00:00 +0000");
+    assert!(f.git(&["checkout", "-q", "side"]).status.success());
+    f.commit("side", b"side\n", "a@x", "2024-01-03T10:00:00 +0000");
+    assert!(f.git(&["checkout", "-q", "master"]).status.success());
+    assert!(f
+        .git(&["merge", "--no-ff", "-qm", "merge", "side"])
+        .status
+        .success());
+    let repo = discover(f.dir.path()).unwrap();
+    assert_eq!(
+        analyze(&repo, &Config::default())
+            .unwrap()
+            .repository
+            .total_commits,
+        4
+    );
+    let selected = analyze_with_options(
+        &repo,
+        &Config::default(),
+        &AnalysisOptions {
+            include_merges: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(selected.repository.total_commits, 3);
+    assert!(!selected.repository.include_merges);
+    let exported = cli(&["--no-merges".as_ref(), "export".as_ref()], f.dir.path());
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+    assert_eq!(json["repository"]["total_commits"], 3);
+}
+
+#[test]
+fn filtered_release_cadence_uses_selected_tag_targets() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    assert!(f.git(&["tag", "v1"]).status.success());
+    f.commit("b", b"two\n", "a@x", "2024-01-02T10:00:00 +0000");
+    assert!(f.git(&["tag", "v2"]).status.success());
+    let data = analyze_with_options(
+        &discover(f.dir.path()).unwrap(),
+        &Config::default(),
+        &AnalysisOptions {
+            since: Some(chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(data.repository.total_commits, 1);
+    assert_eq!(data.insights.first_tag_days, Some(0));
+    assert_eq!(data.insights.release_interval_median_days, None);
+}
+
+#[test]
+fn cli_global_selection_applies_to_export_and_views() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T23:30:00 -0800");
+    f.commit("b", b"two\n", "b@x", "2024-01-02T10:00:00 +0000");
+    let export = cli(
+        &[
+            "--since".as_ref(),
+            "2024-01-02".as_ref(),
+            "--timezone".as_ref(),
+            "utc".as_ref(),
+            "--author".as_ref(),
+            "A@X".as_ref(),
+            "export".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(
+        export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&export.stdout).unwrap();
+    assert_eq!(json["repository"]["total_commits"], 1);
+    assert_eq!(json["repository"]["timezone"], "utc");
+    let view = cli(
+        &[
+            "contributors".as_ref(),
+            "--since".as_ref(),
+            "2024-01-02".as_ref(),
+            "--timezone".as_ref(),
+            "utc".as_ref(),
+            "--author".as_ref(),
+            "A@X".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(
+        view.status.success(),
+        "{}",
+        String::from_utf8_lossy(&view.stderr)
+    );
+    assert!(String::from_utf8_lossy(&view.stdout).contains("a@x"));
+    assert!(!String::from_utf8_lossy(&view.stdout).contains("b@x"));
+    let invalid = cli(
+        &[
+            "--timezone".as_ref(),
+            "Mars/Olympus".as_ref(),
+            "export".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("timezone"));
+}
+
+#[test]
+fn config_timezone_applies_unless_cli_overrides_it() {
+    let f = Fixture::new();
+    f.commit("late", b"late\n", "a@x", "2024-01-01T23:30:00 -0800");
+    fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"timezone":"utc"}"#,
+    )
+    .unwrap();
+    let configured = cli(
+        &["--since".as_ref(), "2024-01-02".as_ref(), "export".as_ref()],
+        f.dir.path(),
+    );
+    assert!(
+        configured.status.success(),
+        "{}",
+        String::from_utf8_lossy(&configured.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&configured.stdout).unwrap();
+    assert_eq!(json["repository"]["total_commits"], 1);
+    assert_eq!(json["repository"]["timezone"], "utc");
+    let overridden = cli(
+        &[
+            "--since".as_ref(),
+            "2024-01-02".as_ref(),
+            "--timezone".as_ref(),
+            "commit".as_ref(),
+            "export".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(!overridden.status.success());
+    assert!(String::from_utf8_lossy(&overridden.stderr).contains("no selected commits"));
+    fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"timezone":"Mars/Olympus"}"#,
+    )
+    .unwrap();
+    let invalid = cli(&["export".as_ref()], f.dir.path());
+    assert!(!invalid.status.success());
+    let error = String::from_utf8_lossy(&invalid.stderr);
+    assert!(
+        error.contains(".git-wrapped.json") && error.contains("timezone"),
+        "{error}"
+    );
+    let override_invalid = cli(
+        &["--timezone".as_ref(), "utc".as_ref(), "export".as_ref()],
+        f.dir.path(),
+    );
+    assert!(
+        override_invalid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&override_invalid.stderr)
+    );
 }
 
 #[test]

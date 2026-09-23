@@ -9,7 +9,70 @@ use crate::{
     },
 };
 use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Timelike};
-use std::collections::{BTreeMap, HashSet};
+use chrono_tz::Tz;
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    str::FromStr,
+};
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TimezoneChoice {
+    #[default]
+    Commit,
+    Utc,
+    Local,
+    Named(Tz),
+}
+
+impl fmt::Display for TimezoneChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Commit => f.write_str("commit"),
+            Self::Utc => f.write_str("utc"),
+            Self::Local => f.write_str("local"),
+            Self::Named(zone) => zone.fmt(f),
+        }
+    }
+}
+
+impl FromStr for TimezoneChoice {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "commit" => Ok(Self::Commit),
+            "utc" => Ok(Self::Utc),
+            "local" => Ok(Self::Local),
+            _ => value.parse::<Tz>().map(Self::Named).map_err(|_| {
+                format!("invalid timezone '{value}'; use commit, utc, local, or an IANA zone")
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AnalysisOptions {
+    pub since: Option<NaiveDate>,
+    pub until: Option<NaiveDate>,
+    pub author_ids: Vec<String>,
+    pub timezone: TimezoneChoice,
+    pub include_merges: bool,
+    pub exclusions: Vec<String>,
+}
+
+impl Default for AnalysisOptions {
+    fn default() -> Self {
+        Self {
+            since: None,
+            until: None,
+            author_ids: Vec::new(),
+            timezone: TimezoneChoice::Commit,
+            include_merges: true,
+            exclusions: Vec::new(),
+        }
+    }
+}
 
 struct WorkingContributor {
     name: String,
@@ -419,6 +482,28 @@ pub fn derive_insights(data: &RepositoryAnalytics, tags: &[TagDate]) -> Result<I
 }
 
 pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics, String> {
+    analyze_with_options(repo, config, &AnalysisOptions::default())
+}
+
+pub fn analyze_with_options(
+    repo: &Repository,
+    config: &Config,
+    options: &AnalysisOptions,
+) -> Result<RepositoryAnalytics, String> {
+    if options
+        .since
+        .zip(options.until)
+        .is_some_and(|(since, until)| until < since)
+    {
+        return Err("until date must be on or after since date".into());
+    }
+    let selected_authors: Vec<String> = options
+        .author_ids
+        .iter()
+        .map(|id| config.canonical_author_id(id))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let mut contributors: BTreeMap<String, WorkingContributor> = BTreeMap::new();
     let mut activity: BTreeMap<String, Activity> = BTreeMap::new();
     let mut heatmap: BTreeMap<String, ActivityCell> = BTreeMap::new();
@@ -434,9 +519,27 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
     let mut deletions = 0;
 
     scan(repo, |raw| {
-        let time = DateTime::parse_from_rfc3339(&raw.author_time)
+        let author_time = DateTime::parse_from_rfc3339(&raw.author_time)
             .map_err(|e| format!("invalid author time for {}: {e}", raw.sha))?;
         let (id, name) = normalize(&raw.mapped_author, config);
+        if !options.include_merges && raw.parents.len() > 1 {
+            return Ok(());
+        }
+        if !selected_authors.is_empty() && selected_authors.binary_search(&id).is_err() {
+            return Ok(());
+        }
+        let time = match options.timezone {
+            TimezoneChoice::Commit => author_time,
+            TimezoneChoice::Utc => author_time.with_timezone(&chrono::Utc).fixed_offset(),
+            TimezoneChoice::Local => author_time.with_timezone(&chrono::Local).fixed_offset(),
+            TimezoneChoice::Named(zone) => author_time.with_timezone(&zone).fixed_offset(),
+        };
+        let day = time.date_naive();
+        if options.since.is_some_and(|since| day < since)
+            || options.until.is_some_and(|until| day > until)
+        {
+            return Ok(());
+        }
         let month = time.format("%Y-%m").to_string();
         let date = time.date_naive().to_string();
         // Fixed common-word list keeps topics descriptive and reproducible.
@@ -589,7 +692,9 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         Ok(())
     })?;
 
-    let (first, latest) = first.zip(latest).ok_or("repository has no commits")?;
+    let (first, latest) = first
+        .zip(latest)
+        .ok_or("repository has no selected commits")?;
     let head_paths = head_paths(repo)?;
     for path in &head_paths {
         let ext = extension(path);
@@ -755,6 +860,11 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
     let mut result = RepositoryAnalytics {
         repository: RepositoryMetadata {
             name: repo.name.clone(),
+            selected_since: options.since.map(|date| date.to_string()),
+            selected_until: options.until.map(|date| date.to_string()),
+            selected_authors,
+            timezone: options.timezone.to_string(),
+            include_merges: options.include_merges,
             first_commit: first.to_rfc3339(),
             latest_commit: latest.to_rfc3339(),
             age_days: (latest - first).num_days(),
@@ -767,6 +877,7 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
                 .checked_add(deletions)
                 .ok_or("repository churn overflow")?,
             tracked_files: repo.tracked_files,
+            tracked_files_scope: "HEAD".into(),
             shallow: repo.shallow,
         },
         contributors,
@@ -793,7 +904,16 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         awards: Vec::new(),
     };
     result.activity_by_week = activity_by_week(&result)?;
-    result.insights = derive_insights(&result, &reachable_tag_dates(repo)?)?;
+    let selected_shas: HashSet<_> = result
+        .commits
+        .iter()
+        .map(|commit| commit.sha.as_str())
+        .collect();
+    let tags: Vec<_> = reachable_tag_dates(repo)?
+        .into_iter()
+        .filter(|tag| selected_shas.contains(tag.target_sha.as_str()))
+        .collect();
+    result.insights = derive_insights(&result, &tags)?;
     result.awards = select_awards(&result);
     Ok(result)
 }

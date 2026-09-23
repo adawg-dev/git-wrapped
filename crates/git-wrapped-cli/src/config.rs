@@ -5,15 +5,25 @@ use std::{collections::BTreeMap, fs, io::ErrorKind, path::Path};
 #[derive(Default)]
 pub struct Config {
     aliases: BTreeMap<String, (String, String)>,
+    pub timezone: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
     contributors: BTreeMap<String, Vec<String>>,
+    timezone: Option<String>,
 }
 
 impl Config {
+    pub fn canonical_author_id(&self, id: &str) -> String {
+        let id = id.trim().to_lowercase();
+        self.aliases
+            .get(&id)
+            .map(|(canonical, _)| canonical.clone())
+            .unwrap_or(id)
+    }
+
     pub fn load(root: &Path) -> Result<Self, String> {
         let path = root.join(".git-wrapped.json");
         let contents = match fs::read(&path) {
@@ -23,7 +33,10 @@ impl Config {
         };
         let file: ConfigFile = serde_json::from_slice(&contents)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        let mut config = Self::default();
+        let mut config = Self {
+            timezone: file.timezone,
+            ..Self::default()
+        };
         for (name, addresses) in file.contributors {
             config
                 .insert_alias_group(
