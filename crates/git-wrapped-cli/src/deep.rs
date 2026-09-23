@@ -1,4 +1,5 @@
 mod blame;
+mod history;
 
 type TreeEntry = (Vec<u8>, Vec<u8>, Vec<u8>); // mode, object ID, raw path
 
@@ -33,7 +34,7 @@ impl Default for DeepLimits {
     }
 }
 
-fn git_bytes(repo: &Repository, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(super) fn git_bytes(repo: &Repository, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(&repo.root)
@@ -51,8 +52,11 @@ fn git_bytes(repo: &Repository, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
-fn entries(repo: &Repository) -> Result<Vec<TreeEntry>, String> {
-    let bytes = git_bytes(repo, &["ls-tree", "-r", "-z", "HEAD"])?;
+pub(super) fn entries_at(repo: &Repository, revision: &str) -> Result<Vec<TreeEntry>, String> {
+    if revision != "HEAD" && !valid_sha(revision) {
+        return Err("invalid tree revision".into());
+    }
+    let bytes = git_bytes(repo, &["ls-tree", "-r", "-z", revision])?;
     bytes
         .split(|&b| b == 0)
         .filter(|entry| !entry.is_empty())
@@ -76,7 +80,11 @@ fn entries(repo: &Repository) -> Result<Vec<TreeEntry>, String> {
         .collect()
 }
 
-fn blob(repo: &Repository, oid: &[u8]) -> Result<Option<Vec<u8>>, String> {
+fn valid_sha(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub(super) fn blob(repo: &Repository, oid: &[u8]) -> Result<Option<Vec<u8>>, String> {
     let oid = String::from_utf8(oid.to_vec()).map_err(|e| e.to_string())?;
     let size = git_bytes(repo, &["cat-file", "-s", &oid])?;
     let size: u64 = String::from_utf8_lossy(&size)
@@ -175,7 +183,7 @@ pub fn analyze_deep_with_cancel(
     let mut by_author = BTreeMap::<String, u64>::new();
     let mut by_directory = BTreeMap::<Vec<u8>, BTreeMap<String, u64>>::new();
     let mut by_extension = BTreeMap::<Vec<u8>, BTreeMap<String, u64>>::new();
-    let entries: Vec<_> = entries(repo)?
+    let entries: Vec<_> = entries_at(repo, "HEAD")?
         .into_iter()
         .filter(|(_, _, path)| !excluded.is_match(String::from_utf8_lossy(path).as_ref()))
         .collect();
@@ -188,6 +196,7 @@ pub fn analyze_deep_with_cancel(
         .filter(|(mode, _, _)| mode == b"160000")
         .count() as u64;
     let mut counted_lines = 0_u64;
+    let mut head_lines = Vec::new();
     for (mode, oid, path) in entries {
         cancel.check()?;
         if start.elapsed() >= deadline {
@@ -232,7 +241,7 @@ pub fn analyze_deep_with_cancel(
         )?;
         let mapped = blame::mapped_ids(repo, config, &lines)?;
         counted_lines += lines.len() as u64;
-        for line in lines {
+        for line in &lines {
             let id = line
                 .author
                 .as_ref()
@@ -256,6 +265,7 @@ pub fn analyze_deep_with_cancel(
                 .entry(id)
                 .or_default() += 1;
         }
+        head_lines.extend(lines);
         if truncated {
             deep.coverage.truncated = true;
             break;
@@ -270,6 +280,22 @@ pub fn analyze_deep_with_cancel(
     deep.surviving_loc = counted_lines;
     deep.ownership_by_directory = groups(by_directory);
     deep.ownership_by_extension = groups(by_extension);
+    let (code_age, survival, truncated_history) = history::analyze(
+        repo,
+        data,
+        history::HistoryBudget {
+            limits,
+            deadline: start.checked_add(deadline),
+            files: deep.coverage.analyzed_files as usize,
+            lines: counted_lines,
+        },
+        cancel,
+        &excluded,
+        &head_lines,
+    )?;
+    deep.code_age = code_age;
+    deep.survival = survival;
+    deep.coverage.truncated |= truncated_history;
     cancel.check()?;
     if start.elapsed() >= deadline {
         deep.coverage.truncated = true;

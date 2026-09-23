@@ -14,7 +14,6 @@ use std::{
 };
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Origin and timestamp fields feed the sampled history tasks.
 pub(crate) struct BlamedLine {
     pub sha: String,
     pub original_line: u64,
@@ -31,20 +30,78 @@ pub(crate) fn blame(
     cancel: &CancelFlag,
     deadline: Option<Instant>,
 ) -> Result<(Vec<BlamedLine>, bool), String> {
+    blame_at(repo, "HEAD", path, max_lines, cancel, deadline)
+}
+
+pub(crate) fn blame_at(
+    repo: &Repository,
+    revision: &str,
+    path: &[u8],
+    max_lines: u64,
+    cancel: &CancelFlag,
+    deadline: Option<Instant>,
+) -> Result<(Vec<BlamedLine>, bool), String> {
+    if revision != "HEAD" && !super::valid_sha(revision) {
+        return Err("invalid blame revision".into());
+    }
     let mut command = Command::new("git");
     command
         .arg("-C")
         .arg(&repo.root)
-        .args([
-            "blame",
-            "--line-porcelain",
-            "--root",
-            "--no-textconv",
-            "HEAD",
-        ])
+        .args(["blame", "--line-porcelain", "--root", "--no-textconv"])
+        .arg(revision)
         .arg("--")
         .arg(std::ffi::OsString::from_vec(path.to_vec()));
     blame_command_with_cancel(command, max_lines, cancel, deadline, path)
+}
+
+fn decode_filename(value: &[u8]) -> Result<Vec<u8>, String> {
+    if value.first() != Some(&b'"') {
+        return Ok(value.to_vec());
+    }
+    if value.last() != Some(&b'"') || value.len() < 2 {
+        return Err("invalid quoted blame filename".into());
+    }
+    let mut decoded = Vec::new();
+    let mut index = 1;
+    while index < value.len() - 1 {
+        if value[index] != b'\\' {
+            decoded.push(value[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *value.get(index).ok_or("incomplete blame filename escape")?;
+        if (b'0'..=b'7').contains(&escaped) {
+            if index + 2 >= value.len() - 1 {
+                return Err("incomplete octal blame filename escape".into());
+            }
+            let octal = &value[index..index + 3];
+            if !octal.iter().all(|byte| (b'0'..=b'7').contains(byte)) {
+                return Err("invalid octal blame filename escape".into());
+            }
+            let byte = u16::from(octal[0] - b'0') * 64
+                + u16::from(octal[1] - b'0') * 8
+                + u16::from(octal[2] - b'0');
+            decoded.push(u8::try_from(byte).map_err(|_| "invalid octal blame filename byte")?);
+            index += 3;
+        } else {
+            decoded.push(match escaped {
+                b'a' => 7,
+                b'b' => 8,
+                b't' => b'\t',
+                b'n' => b'\n',
+                b'v' => 11,
+                b'f' => 12,
+                b'r' => b'\r',
+                b'\\' => b'\\',
+                b'"' => b'"',
+                _ => return Err("invalid blame filename escape".into()),
+            });
+            index += 1;
+        }
+    }
+    Ok(decoded)
 }
 
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
@@ -229,7 +286,7 @@ fn blame_command_with_cancel(
             } else if let Some(value) = record.strip_prefix(b"author-tz ") {
                 author_tz = Some(String::from_utf8_lossy(value).into_owned());
             } else if let Some(value) = record.strip_prefix(b"filename ") {
-                filename = value.to_vec();
+                filename = decode_filename(value)?;
             } else if record == b"boundary" {
                 boundary = true;
             }
@@ -357,6 +414,16 @@ mod tests {
             );
         }
         assert_eq!(parse_header(b"short 12 1 1"), None);
+    }
+
+    #[test]
+    fn decodes_git_quoted_filenames_without_losing_bytes() {
+        assert_eq!(decode_filename(b"plain name").unwrap(), b"plain name");
+        assert_eq!(
+            decode_filename(br#""space\040tab\tline\nquote\"slash\\bad\377""#).unwrap(),
+            b"space tab\tline\nquote\"slash\\bad\xff"
+        );
+        assert!(decode_filename(br#""bad\x""#).is_err());
     }
 
     #[test]

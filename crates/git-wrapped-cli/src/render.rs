@@ -902,6 +902,97 @@ pub fn render_report_with_options(
     ] {
         write_artifact(output, name, page.as_bytes())?;
     }
+    if let Some(deep) = &data.deep {
+        let mut body = heading("Ship of Theseus");
+        body += &text(64, 166, 21, muted, "sampled surviving line identities");
+        body += &text(
+            64,
+            202,
+            17,
+            muted,
+            "Git blame origins; rewrites and unexamined files may change this estimate.",
+        );
+        let mut coordinates = Vec::new();
+        for (index, point) in deep.survival.iter().enumerate() {
+            let x = if deep.survival.len() == 1 {
+                600.0
+            } else {
+                100.0 + index as f64 * 1000.0 / (deep.survival.len() - 1) as f64
+            };
+            let y = 550.0 - point.percent * 2.8;
+            coordinates.push(format!("{x:.1},{y:.1}"));
+            body += &format!("<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"7\" fill=\"{accent}\"/>");
+            body += &text(
+                x as u32 - 25,
+                580,
+                14,
+                muted,
+                point.snapshot_date.get(..4).unwrap_or("?"),
+            );
+        }
+        if !coordinates.is_empty() {
+            body += &format!(
+                "<polyline fill=\"none\" stroke=\"{accent}\" stroke-width=\"4\" points=\"{}\"/>",
+                coordinates.join(" ")
+            );
+        } else {
+            body += &text(
+                64,
+                360,
+                25,
+                fg,
+                "No selected snapshots within the deep budget",
+            );
+        }
+        let covered_files: u64 = deep.survival.iter().map(|point| point.sampled_files).sum();
+        let eligible_files: u64 = deep.survival.iter().map(|point| point.eligible_files).sum();
+        body += &text(
+            64,
+            635,
+            17,
+            muted,
+            &format!(
+                "{} selected snapshots · {covered_files}/{eligible_files} sampled text / regular files · {}",
+                deep.survival.len(),
+                if deep.coverage.truncated {
+                    "partial coverage"
+                } else {
+                    "within budget"
+                }
+            ),
+        );
+        body += &text(
+            64,
+            684,
+            17,
+            fg,
+            &format!(
+                "Current line age: median {} days · oldest {} days · {} future-dated",
+                deep.code_age
+                    .median_days
+                    .map_or("unknown".into(), |n| n.to_string()),
+                deep.code_age
+                    .oldest_days
+                    .map_or("unknown".into(), |n| n.to_string()),
+                deep.code_age.future_dated_lines
+            ),
+        );
+        let cohorts = deep
+            .code_age
+            .year_cohorts
+            .iter()
+            .map(|c| format!("{}: {}", c.year, c.surviving_lines))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        body += &text(
+            64,
+            732,
+            17,
+            muted,
+            &short(&format!("Surviving line origin years: {cohorts}"), 110),
+        );
+        write("ship-of-theseus.svg", 800, body)?;
+    }
 
     let mut body = heading("The people behind the commits");
     let max = data

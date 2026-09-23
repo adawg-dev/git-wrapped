@@ -11,6 +11,135 @@ use git_wrapped::progress::CancelFlag;
 use std::{fs, process::Command};
 
 #[test]
+fn deep_survival_tracks_two_eras_and_writes_only_in_deep_reports() {
+    let f = Fixture::new();
+    f.commit("a", b"old\nkeep\n", "a@x", "2020-01-01T10:00:00 +0000");
+    f.commit("a", b"keep\nnew\n", "b@x", "2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    assert!(!out.path().join("ship-of-theseus.svg").exists());
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let deep = data.deep.as_ref().unwrap();
+    assert_eq!(deep.survival.len(), 2);
+    assert_eq!(deep.survival[0].original_lines, 2);
+    assert_eq!(deep.survival[0].surviving_lines, 1);
+    assert_eq!(deep.survival[0].percent, 50.0);
+    for point in &deep.survival {
+        assert!(point.surviving_lines <= point.original_lines);
+        assert!((0.0..=100.0).contains(&point.percent));
+    }
+    assert!(deep.code_age.oldest_days.unwrap() >= 1460);
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("ship-of-theseus.svg")).unwrap();
+    assert!(svg.contains("sampled surviving line identities"));
+}
+
+#[test]
+fn deep_age_clamps_future_authorship() {
+    let f = Fixture::new();
+    f.commit(
+        "future",
+        b"from tomorrow\n",
+        "a@x",
+        "2030-01-01T10:00:00 +0000",
+    );
+    f.commit(
+        "current",
+        b"from today\n",
+        "b@x",
+        "2024-01-01T10:00:00 +0000",
+    );
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze_with_options(
+        &repo,
+        &Config::default(),
+        &AnalysisOptions {
+            author_ids: vec!["b@x".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let age = &data.deep.unwrap().code_age;
+    assert_eq!(age.future_dated_lines, 1);
+    assert_eq!(age.oldest_days, Some(0));
+    assert_eq!(age.median_days, Some(0));
+}
+
+#[test]
+fn deep_survival_preserves_renamed_quoted_origin_path() {
+    let f = Fixture::new();
+    let original = f.dir.path().join("space tab\tline\nquote\".txt");
+    fs::write(&original, b"survives\n").unwrap();
+    let commit = |date: &str| {
+        assert!(f.git(&["add", "--all"]).status.success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(f.dir.path())
+            .args(["commit", "-qm", "fixture"])
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "a@x")
+            .status()
+            .unwrap()
+            .success());
+    };
+    commit("2020-01-01T10:00:00 +0000");
+    fs::rename(&original, f.dir.path().join("renamed.txt")).unwrap();
+    commit("2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let points = &data.deep.unwrap().survival;
+    assert_eq!(points.len(), 2);
+    assert_eq!(points[0].original_lines, 1);
+    assert_eq!(points[0].surviving_lines, 1);
+}
+
+#[test]
+fn deep_survival_samples_at_most_twelve_selected_commits() {
+    let f = Fixture::new();
+    for day in 1..=14 {
+        f.commit(
+            "a",
+            format!("original\nchange {day}\n").as_bytes(),
+            "a@x",
+            &format!("2024-01-{day:02}T10:00:00 +0000"),
+        );
+    }
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    let first = data
+        .commits
+        .iter()
+        .min_by_key(|c| &c.author_time)
+        .unwrap()
+        .sha
+        .clone();
+    let last = data
+        .commits
+        .iter()
+        .max_by_key(|c| &c.author_time)
+        .unwrap()
+        .sha
+        .clone();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let points = &data.deep.unwrap().survival;
+    assert_eq!(points.len(), 12);
+    assert_eq!(points.first().unwrap().snapshot_sha, first);
+    assert_eq!(points.last().unwrap().snapshot_sha, last);
+}
+
+#[test]
 fn current_ownership_counts_head_lines_and_normalizes_mailmap_aliases() {
     let f = Fixture::new();
     f.commit("a.txt", b"one\ntwo\n", "old@x", "2024-01-01T10:00:00 +0000");

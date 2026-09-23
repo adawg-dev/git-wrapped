@@ -238,6 +238,8 @@ pub struct SurvivalPoint {
     pub surviving_lines: u64,
     pub percent: f64,
     pub sampled_files: u64,
+    pub eligible_files: u64,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

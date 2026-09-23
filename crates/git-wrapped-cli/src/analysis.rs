@@ -147,7 +147,7 @@ fn extension(path: &[u8]) -> String {
     }
 }
 
-fn path_id(path: &[u8]) -> String {
+pub(crate) fn path_id(path: &[u8]) -> String {
     path.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
