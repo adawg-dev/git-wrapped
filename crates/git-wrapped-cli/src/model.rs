@@ -54,6 +54,10 @@ pub struct ContributorAnalytics {
     pub files_touched: usize,
     pub directories_touched: usize,
     pub active_days: usize,
+    pub tenure_days: i64,
+    pub longest_streak: u64,
+    pub first_seen_month: String,
+    pub returning_after_90_days: u64,
     pub first_contribution: String,
     pub latest_contribution: String,
     pub average_commit_size: f64,
@@ -83,6 +87,26 @@ pub struct ActivityCell {
 pub struct Peak {
     pub label: String,
     pub count: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Overlap {
+    pub first_id: String,
+    pub second_id: String,
+    pub weeks: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WordCount {
+    pub word: String,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TreeSample {
+    pub sha: String,
+    pub author_date: String,
+    pub tracked_files: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -187,6 +211,10 @@ pub struct RepositoryAnalytics {
     pub activity: Vec<Activity>,
     pub activity_heatmap: Vec<ActivityCell>,
     pub activity_by_week: Vec<ActivityCell>,
+    pub newcomers_by_month: Vec<Peak>,
+    pub collaboration_overlap: Vec<Overlap>,
+    pub subject_words: Vec<WordCount>,
+    pub tree_samples: Vec<TreeSample>,
     pub insights: Insights,
     pub files: Vec<FileAnalytics>,
     pub directories: Vec<DirectoryAnalytics>,

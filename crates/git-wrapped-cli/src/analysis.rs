@@ -1,11 +1,11 @@
 use crate::{
     awards::select_awards,
     config::{normalize, Config},
-    git::{head_paths, reachable_tag_dates, scan, Repository},
+    git::{head_paths, reachable_tag_dates, scan, tree_file_count, Repository},
     model::{
         Activity, ActivityCell, CommitRecord, CommitSummary, ContributorAnalytics,
-        DirectoryAnalytics, ExtensionAnalytics, FileAnalytics, Insights, Peak, RepositoryAnalytics,
-        RepositoryMetadata, TagDate,
+        DirectoryAnalytics, ExtensionAnalytics, FileAnalytics, Insights, Overlap, Peak,
+        RepositoryAnalytics, RepositoryMetadata, TagDate, TreeSample, WordCount,
     },
 };
 use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Timelike};
@@ -19,7 +19,8 @@ struct WorkingContributor {
     sizes: Vec<u64>,
     files: HashSet<Vec<u8>>,
     directories: HashSet<Vec<u8>>,
-    days: HashSet<String>,
+    days: HashSet<NaiveDate>,
+    weeks: HashSet<(i32, u32)>,
     first: DateTime<FixedOffset>,
     latest: DateTime<FixedOffset>,
     by_hour: [u64; 24],
@@ -97,6 +98,38 @@ fn median_commit_size(sizes: &mut [u64]) -> f64 {
     } else {
         sizes[middle - 1] as f64 / 2.0 + sizes[middle] as f64 / 2.0
     }
+}
+
+/// Bounded tree history for the opt-in deep analysis path.
+pub fn sample_trees(
+    repo: &Repository,
+    commits: &[CommitSummary],
+) -> Result<Vec<TreeSample>, String> {
+    let mut chronological: Vec<_> = commits
+        .iter()
+        .map(|commit| {
+            DateTime::parse_from_rfc3339(&commit.author_time)
+                .map(|time| (time, commit))
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    chronological.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.sha.cmp(&b.1.sha)));
+    let count = chronological.len().min(24);
+    let mut samples = Vec::with_capacity(count);
+    for index in 0..count {
+        let position = if count == 1 {
+            0
+        } else {
+            index * (chronological.len() - 1) / (count - 1)
+        };
+        let (time, commit) = chronological[position];
+        samples.push(TreeSample {
+            sha: commit.sha.clone(),
+            author_date: time.date_naive().to_string(),
+            tracked_files: tree_file_count(repo, &commit.sha)?,
+        });
+    }
+    Ok(samples)
 }
 
 const MAX_BUCKETS: i64 = 20_000;
@@ -378,6 +411,7 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
     let mut files: BTreeMap<Vec<u8>, WorkingFile> = BTreeMap::new();
     let mut directories: BTreeMap<Vec<u8>, WorkingDirectory> = BTreeMap::new();
     let mut extensions: BTreeMap<String, ExtensionAnalytics> = BTreeMap::new();
+    let mut subject_counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut first: Option<DateTime<FixedOffset>> = None;
     let mut latest: Option<DateTime<FixedOffset>> = None;
     let mut total_commits = 0;
@@ -390,6 +424,17 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         let (id, name) = normalize(&raw.mapped_author, config);
         let month = time.format("%Y-%m").to_string();
         let date = time.date_naive().to_string();
+        // Fixed common-word list keeps topics descriptive and reproducible.
+        const STOP_WORDS: &[&str] = &["and", "are", "for", "from", "into", "the", "this", "with"];
+        for word in raw.subject.split(|c: char| !c.is_alphanumeric()) {
+            if word.chars().count() < 3 {
+                continue;
+            }
+            let word = word.to_lowercase();
+            if !STOP_WORDS.contains(&word.as_str()) {
+                add(subject_counts.entry(word).or_default(), 1)?;
+            }
+        }
         let mut commit_additions = 0;
         let mut commit_deletions = 0;
         let contributor = contributors
@@ -403,6 +448,7 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
                 files: HashSet::new(),
                 directories: HashSet::new(),
                 days: HashSet::new(),
+                weeks: HashSet::new(),
                 first: time,
                 latest: time,
                 by_hour: [0; 24],
@@ -422,7 +468,9 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
             1,
         )?;
         add(&mut contributor.by_month[time.month0() as usize], 1)?;
-        contributor.days.insert(date.clone());
+        contributor.days.insert(time.date_naive());
+        let week = time.date_naive().iso_week();
+        contributor.weeks.insert((week.year(), week.week()));
         if time < contributor.first {
             contributor.first = time;
         }
@@ -591,9 +639,29 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
             current_file_count: dir.current_file_count,
         })
         .collect();
+    let mut weeks_by_author = BTreeMap::new();
+    let mut newcomers = BTreeMap::<String, u64>::new();
     let mut contributors = contributors
         .into_iter()
         .map(|(id, mut c)| {
+            let mut days: Vec<_> = c.days.drain().collect();
+            days.sort_unstable();
+            let mut streak = 0u64;
+            let mut longest_streak = 0u64;
+            let mut returning_after_90_days = 0u64;
+            for (index, day) in days.iter().enumerate() {
+                let gap = index
+                    .checked_sub(1)
+                    .map(|previous| (*day - days[previous]).num_days());
+                streak = if gap == Some(1) { streak + 1 } else { 1 };
+                longest_streak = longest_streak.max(streak);
+                if gap.is_some_and(|days| days > 90) {
+                    returning_after_90_days += 1;
+                }
+            }
+            let first_seen_month = days[0].format("%Y-%m").to_string();
+            add(newcomers.entry(first_seen_month.clone()).or_default(), 1)?;
+            weeks_by_author.insert(id.clone(), c.weeks);
             let churn = c
                 .additions
                 .checked_add(c.deletions)
@@ -609,7 +677,11 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
                 churn,
                 files_touched: c.files.len(),
                 directories_touched: c.directories.len(),
-                active_days: c.days.len(),
+                active_days: days.len(),
+                tenure_days: (days[days.len() - 1] - days[0]).num_days(),
+                longest_streak,
+                first_seen_month,
+                returning_after_90_days,
                 first_contribution: c.first.to_rfc3339(),
                 latest_contribution: c.latest.to_rfc3339(),
                 average_commit_size: churn as f64 / c.commits as f64,
@@ -623,6 +695,47 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         })
         .collect::<Result<Vec<_>, String>>()?;
     contributors.sort_by(|a, b| b.commits.cmp(&a.commits).then_with(|| a.id.cmp(&b.id)));
+    let mut weeks = BTreeMap::<(i32, u32), Vec<&str>>::new();
+    for contributor in contributors.iter().take(20) {
+        for &week in &weeks_by_author[&contributor.id] {
+            weeks.entry(week).or_default().push(&contributor.id);
+        }
+    }
+    let mut overlap = BTreeMap::<(String, String), u64>::new();
+    for authors in weeks.values_mut() {
+        authors.sort_unstable();
+        for (index, first) in authors.iter().enumerate() {
+            for second in authors.iter().skip(index + 1) {
+                add(
+                    overlap
+                        .entry(((*first).into(), (*second).into()))
+                        .or_default(),
+                    1,
+                )?;
+            }
+        }
+    }
+    let mut collaboration_overlap: Vec<_> = overlap
+        .into_iter()
+        .map(|((first_id, second_id), weeks)| Overlap {
+            first_id,
+            second_id,
+            weeks,
+        })
+        .collect();
+    collaboration_overlap.sort_by(|a, b| {
+        b.weeks
+            .cmp(&a.weeks)
+            .then_with(|| a.first_id.cmp(&b.first_id))
+            .then_with(|| a.second_id.cmp(&b.second_id))
+    });
+    let mut subject_words: Vec<_> = subject_counts
+        .into_iter()
+        .filter(|(_, count)| *count >= 3)
+        .map(|(word, count)| WordCount { word, count })
+        .collect();
+    subject_words.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.word.cmp(&b.word)));
+    subject_words.truncate(30);
     commits.sort_by(|a, b| a.sha.cmp(&b.sha));
     let mut result = RepositoryAnalytics {
         repository: RepositoryMetadata {
@@ -646,6 +759,18 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         activity: activity.into_values().collect(),
         activity_heatmap: heatmap.into_values().collect(),
         activity_by_week: Vec::new(),
+        newcomers_by_month: newcomers
+            .into_iter()
+            .map(|(label, count)| {
+                Ok(Peak {
+                    label,
+                    count: i64::try_from(count).map_err(|_| "newcomer count exceeds i64")?,
+                })
+            })
+            .collect::<Result<_, String>>()?,
+        collaboration_overlap,
+        subject_words,
+        tree_samples: Vec::new(),
         insights: Insights::default(),
         files,
         directories,

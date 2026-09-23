@@ -100,6 +100,20 @@ pub fn head_paths(repo: &Repository) -> Result<Vec<Vec<u8>>, String> {
         .collect())
 }
 
+pub(crate) fn tree_file_count(repo: &Repository, sha: &str) -> Result<usize, String> {
+    let bytes = git(
+        &repo.root,
+        &[
+            OsStr::new("ls-tree"),
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("--name-only"),
+            OsStr::new(sha),
+        ],
+    )?;
+    Ok(bytes.iter().filter(|&&byte| byte == 0).count())
+}
+
 pub fn reachable_tag_dates(repo: &Repository) -> Result<Vec<TagDate>, String> {
     let names = git(
         &repo.root,

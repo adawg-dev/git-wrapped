@@ -1,6 +1,6 @@
 mod common;
 use common::Fixture;
-use git_wrapped::analysis::{activity_by_day, activity_by_month, analyze};
+use git_wrapped::analysis::{activity_by_day, activity_by_month, analyze, sample_trees};
 use git_wrapped::awards::select_awards;
 use git_wrapped::config::{normalize, Config};
 use git_wrapped::git::{discover, reachable_tag_dates, scan};
@@ -12,6 +12,109 @@ fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output
         .args(args)
         .output()
         .unwrap()
+}
+
+#[test]
+fn contributor_tenure_overlap_words_and_trees_use_selected_history() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-01T10:00:00 +0000");
+    assert!(f
+        .git(&["commit", "--amend", "-qm", "Repair\u{1b}repair repair"])
+        .status
+        .success());
+    f.commit("d", b"d\n", "a@x", "2024-01-02T10:00:00 +0000");
+    f.commit("b", b"b\n", "b@x", "2024-01-03T10:00:00 +0000");
+    f.commit("c", b"c\n", "a@x", "2024-04-02T10:00:00 +0000");
+    let x = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    let a = x.contributors.iter().find(|c| c.id == "a@x").unwrap();
+    assert_eq!(a.tenure_days, 92);
+    assert_eq!(a.longest_streak, 2);
+    assert_eq!(a.first_seen_month, "2024-01");
+    assert_eq!(a.returning_after_90_days, 1);
+    assert_eq!(x.newcomers_by_month[0].label, "2024-01");
+    assert_eq!(x.newcomers_by_month[0].count, 2);
+    assert_eq!(
+        (
+            x.collaboration_overlap[0].first_id.as_str(),
+            x.collaboration_overlap[0].second_id.as_str(),
+            x.collaboration_overlap[0].weeks
+        ),
+        ("a@x", "b@x", 1)
+    );
+    assert_eq!(
+        x.subject_words
+            .iter()
+            .find(|w| w.word == "repair")
+            .unwrap()
+            .count,
+        3
+    );
+    assert!(x
+        .subject_words
+        .iter()
+        .all(|w| !w.word.chars().any(char::is_control)));
+    assert!(x.tree_samples.is_empty());
+    assert_eq!(
+        sample_trees(&discover(f.dir.path()).unwrap(), &x.commits)
+            .unwrap()
+            .iter()
+            .map(|s| s.tracked_files)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+}
+
+#[test]
+fn deep_tree_samples_include_endpoints_and_stop_at_twenty_four() {
+    let f = Fixture::new();
+    for day in 1..=25 {
+        f.commit(
+            "file",
+            format!("{day}\n").as_bytes(),
+            "a@x",
+            &format!("2024-01-{day:02}T10:00:00 +0000"),
+        );
+    }
+    let repo = discover(f.dir.path()).unwrap();
+    let x = analyze(&repo, &Config::default()).unwrap();
+    let samples = sample_trees(&repo, &x.commits).unwrap();
+    assert!(x.tree_samples.is_empty());
+    assert_eq!(samples.len(), 24);
+    assert_eq!(samples.first().unwrap().author_date, "2024-01-01");
+    assert_eq!(samples.last().unwrap().author_date, "2024-01-25");
+}
+
+#[test]
+fn overlap_and_vocabulary_caps_keep_deterministic_ties() {
+    let f = Fixture::new();
+    for index in 0..21 {
+        f.commit(
+            &format!("file{index}"),
+            b"a\n",
+            &format!("person{index:02}@x"),
+            "2024-01-01T10:00:00 +0000",
+        );
+        if index == 0 {
+            let subject = (0..31)
+                .map(|word| format!("topic{word:02} topic{word:02} topic{word:02}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(f
+                .git(&["commit", "--amend", "-qm", &subject])
+                .status
+                .success());
+        }
+    }
+    let x = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    assert_eq!(x.collaboration_overlap.len(), 190);
+    assert!(x
+        .collaboration_overlap
+        .iter()
+        .all(|row| row.first_id != "person20@x" && row.second_id != "person20@x"));
+    assert_eq!(x.subject_words.len(), 30);
+    assert_eq!(x.subject_words.first().unwrap().word, "fixture");
+    assert_eq!(x.subject_words[1].word, "topic00");
+    assert_eq!(x.subject_words.last().unwrap().word, "topic28");
 }
 
 #[test]
@@ -1141,6 +1244,8 @@ fn cross_offset_age_counts_elapsed_full_days() {
     assert_eq!(data.repository.age_days, 1);
     assert_eq!(data.contributors[0].commits_by_hour[0], 1);
     assert_eq!(data.contributors[0].commits_by_hour[23], 1);
+    assert_eq!(data.contributors[0].tenure_days, 1);
+    assert_eq!(data.contributors[0].longest_streak, 2);
 }
 
 #[test]
