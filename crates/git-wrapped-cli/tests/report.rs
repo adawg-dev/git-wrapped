@@ -1,6 +1,7 @@
 mod common;
 use common::Fixture;
 use git_wrapped::analysis::analyze;
+use git_wrapped::awards::select_awards;
 use git_wrapped::config::{normalize, Config};
 use git_wrapped::git::{discover, scan};
 
@@ -169,11 +170,80 @@ fn analysis_counts_history_and_serializes_deterministically() {
     );
     assert_eq!(data.activity_heatmap.len(), 7);
     assert_eq!(data.activity_heatmap[0].date, "2024-01-01");
-    assert!(data.awards.is_empty());
+    assert_eq!(
+        serde_json::to_value(&data.awards).unwrap(),
+        serde_json::to_value(select_awards(&data)).unwrap()
+    );
     assert_eq!(
         data.commits.iter().filter(|c| c.files_changed == 0).count(),
         2
     );
+}
+
+#[test]
+fn award_ties_use_stable_identity() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "z@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    f.commit(
+        "b.txt",
+        b"b\n",
+        "a@example.com",
+        "2024-01-02T12:00:00 +0000",
+    );
+    let repo = discover(f.dir.path()).unwrap();
+    let data = analyze(&repo, &Config::default()).unwrap();
+    let awards = select_awards(&data);
+    assert_eq!(
+        awards
+            .iter()
+            .find(|a| a.slug == "commit-machine")
+            .unwrap()
+            .winner_id,
+        "a@example.com"
+    );
+    assert!(!awards.iter().any(|a| a.slug == "night-owl"));
+}
+
+#[test]
+fn awards_cover_all_ten_positive_metrics() {
+    let f = Fixture::new();
+    for (index, hour) in [1, 6, 1, 6, 1, 6].into_iter().enumerate() {
+        f.commit(
+            "file.txt",
+            format!("line {index}\n").as_bytes(),
+            "a@example.com",
+            &format!("2024-01-0{}T{hour:02}:00:00 +0000", index + 6),
+        );
+    }
+    let data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    let slugs: Vec<_> = data.awards.iter().map(|a| a.slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        [
+            "commit-machine",
+            "code-creator",
+            "code-destroyer",
+            "net-positive",
+            "night-owl",
+            "early-bird",
+            "weekend-warrior",
+            "biggest-bang",
+            "biggest-cleanup",
+            "repo-explorer"
+        ]
+    );
+    for award in &data.awards {
+        assert!(!award.winner_id.is_empty());
+        assert!(!award.winner.is_empty());
+        assert!(!award.metric.is_empty());
+        assert!(!award.value.is_empty());
+        assert!(!award.explanation.is_empty());
+    }
 }
 
 #[test]

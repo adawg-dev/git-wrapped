@@ -1,4 +1,5 @@
 use crate::{
+    awards::select_awards,
     config::{normalize, Config},
     git::{scan, Repository},
     model::{
@@ -204,7 +205,7 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         .collect::<Result<Vec<_>, String>>()?;
     contributors.sort_by(|a, b| b.commits.cmp(&a.commits).then_with(|| a.id.cmp(&b.id)));
     commits.sort_by(|a, b| a.sha.cmp(&b.sha));
-    Ok(RepositoryAnalytics {
+    let mut result = RepositoryAnalytics {
         repository: RepositoryMetadata {
             name: repo.name.clone(),
             first_commit: first.to_rfc3339(),
@@ -226,7 +227,9 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
         activity: activity.into_values().collect(),
         activity_heatmap: heatmap.into_values().collect(),
         awards: Vec::new(),
-    })
+    };
+    result.awards = select_awards(&result);
+    Ok(result)
 }
 
 #[cfg(test)]
