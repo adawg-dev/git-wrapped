@@ -1,0 +1,145 @@
+use serde::Serialize;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Identity {
+    pub name: String,
+    pub email: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileChange {
+    pub path: Vec<u8>,
+    pub old_path: Option<Vec<u8>>,
+    pub additions: u64,
+    pub deletions: u64,
+    pub binary: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct RawCommit {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub raw_author: Identity,
+    pub mapped_author: Identity,
+    pub author_time: String,
+    pub committer_time: String,
+    pub subject: String,
+    pub changes: Vec<FileChange>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CommitSummary {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub raw_author: Identity,
+    pub author_id: String,
+    pub author_time: String,
+    pub committer_time: String,
+    pub subject: String,
+    pub files_changed: usize,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContributorAnalytics {
+    pub id: String,
+    pub name: String,
+    pub commits: u64,
+    pub commit_percent: f64,
+    pub additions: u64,
+    pub deletions: u64,
+    pub net: i64,
+    pub churn: u64,
+    pub files_touched: usize,
+    pub directories_touched: usize,
+    pub active_days: usize,
+    pub first_contribution: String,
+    pub latest_contribution: String,
+    pub average_commit_size: f64,
+    pub median_commit_size: f64,
+    pub largest_commit: u64,
+    pub largest_deletion: u64,
+    pub commits_by_hour: [u64; 24],
+    pub commits_by_weekday: [u64; 7],
+    pub commits_by_month: [u64; 12],
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Activity {
+    pub month: String,
+    pub commits: u64,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ActivityCell {
+    pub date: String,
+    pub commits: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Award {
+    pub slug: String,
+    pub title: String,
+    pub winner_id: String,
+    pub winner: String,
+    pub metric: String,
+    pub value: String,
+    pub explanation: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RepositoryMetadata {
+    pub name: String,
+    pub first_commit: String,
+    pub latest_commit: String,
+    pub age_days: i64,
+    pub total_commits: u64,
+    pub total_contributors: usize,
+    pub additions: u64,
+    pub deletions: u64,
+    pub net_historical_lines: i64,
+    pub churn: u64,
+    pub tracked_files: usize,
+    pub shallow: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RepositoryAnalytics {
+    pub repository: RepositoryMetadata,
+    pub contributors: Vec<ContributorAnalytics>,
+    pub commits: Vec<CommitSummary>,
+    pub activity: Vec<Activity>,
+    pub activity_heatmap: Vec<ActivityCell>,
+    pub awards: Vec<Award>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_raw_identity_and_distinct_line_meanings() {
+        let c = CommitSummary {
+            sha: "a".repeat(40),
+            parents: vec![],
+            raw_author: Identity {
+                name: "A".into(),
+                email: "a@x".into(),
+            },
+            author_id: "a@x".into(),
+            author_time: "2024-01-01T01:00:00+00:00".into(),
+            committer_time: "2024-01-01T01:00:00+00:00".into(),
+            subject: "first".into(),
+            files_changed: 1,
+            additions: 3,
+            deletions: 1,
+        };
+        let value = serde_json::to_value(&c).unwrap();
+        assert_eq!(value["raw_author"]["email"], "a@x");
+        assert_eq!(value["additions"], 3);
+        assert_eq!(value["deletions"], 1);
+    }
+}
