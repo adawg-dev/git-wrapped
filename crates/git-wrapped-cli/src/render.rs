@@ -252,60 +252,57 @@ pub fn render_report(
                 .map(|d| (d, c.commits))
         })
         .collect();
-    if let (Some(first), Some(last)) = (
-        cells.iter().map(|c| c.0).min(),
-        cells.iter().map(|c| c.0).max(),
-    ) {
-        let years = (last.year() - first.year() + 1) as f64;
-        let band = (520.0 / years).min(180.0);
-        let size = (band / 10.0).min(17.0);
-        let max = cells.iter().map(|c| c.1).max().unwrap_or(1).max(1) as f64;
-        for year in first.year()..=last.year() {
-            let y = 210.0 + (year - first.year()) as f64 * band;
-            body += &text(64, y as u32, size as u32, muted, &year.to_string());
-            let jan = NaiveDate::from_ymd_opt(year, 1, 1).ok_or("invalid calendar year")?;
-            for month in 1..=12 {
-                let d = NaiveDate::from_ymd_opt(year, month, 1).ok_or("invalid calendar month")?;
-                let week = (d.ordinal0() + jan.weekday().num_days_from_monday()) / 7;
-                body += &text(
-                    140 + week * 18,
-                    y as u32,
-                    size as u32,
-                    muted,
-                    &d.format("%b").to_string(),
-                );
-            }
-            let mut date = jan;
-            while date.year() == year {
-                let week = (date.ordinal0() + jan.weekday().num_days_from_monday()) / 7;
-                body += &rect(
-                    (140 + week * 18) as f64,
-                    y + 14.0 + date.weekday().num_days_from_monday() as f64 * size,
-                    15.0,
-                    (size - 2.0).max(0.5),
-                    empty,
-                );
-                let Some(next) = date.succ_opt() else { break };
-                date = next;
-            }
+    if let Some(last) =
+        NaiveDate::parse_from_str(r.latest_commit.split('T').next().unwrap_or(""), "%Y-%m-%d")
+            .ok()
+            .or_else(|| cells.iter().map(|c| c.0).max())
+    {
+        let first = last
+            .checked_sub_days(chrono::Days::new(364))
+            .ok_or("calendar window out of range")?;
+        let offset = first.weekday().num_days_from_monday() as i64;
+        let visible: std::collections::BTreeMap<_, _> = cells
+            .iter()
+            .copied()
+            .filter(|(date, _)| *date >= first && *date <= last)
+            .collect();
+        let max = visible.values().copied().max().unwrap_or(1).max(1) as f64;
+        body += &text(
+            64,
+            185,
+            20,
+            muted,
+            &format!("Trailing 365 days · {first} — {last}"),
+        );
+        for (row, day) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            .iter()
+            .enumerate()
+        {
+            body += &text(64, 289 + row as u32 * 24, 16, muted, day);
         }
-        for (date, count) in cells.iter().filter(|c| c.1 > 0) {
-            let jan = NaiveDate::from_ymd_opt(date.year(), 1, 1).ok_or("invalid calendar year")?;
-            let week = (date.ordinal0() + jan.weekday().num_days_from_monday()) / 7;
-            let y = 224.0
-                + (date.year() - first.year()) as f64 * band
-                + date.weekday().num_days_from_monday() as f64 * size;
-            body += &format!(
-                "<g opacity=\"{:.2}\"><title>{date}: {count} commits</title>{}</g>",
-                0.4 + *count as f64 / max * 0.6,
-                rect(
-                    (140 + week * 18) as f64,
-                    y,
-                    15.0,
-                    (size - 2.0).max(0.5),
-                    accent
-                )
-            );
+        let mut date = first;
+        loop {
+            let week = ((date - first).num_days() + offset) / 7;
+            let x = 112 + week as u32 * 19;
+            let y = 275 + date.weekday().num_days_from_monday() * 24;
+            // A very short opening month has no room for a label before the next month.
+            if date.day() == 1 || (date == first && date.day() <= 15) {
+                body += &text(x, 248, 16, muted, &date.format("%b").to_string());
+            }
+            let count = visible.get(&date).copied().unwrap_or(0);
+            if count == 0 {
+                body += &rect(x as f64, y as f64, 16.0, 20.0, empty);
+            } else {
+                body += &format!(
+                    "<g opacity=\"{:.2}\"><title>{date}: {count} commits</title>{}</g>",
+                    0.4 + count as f64 / max * 0.6,
+                    rect(x as f64, y as f64, 16.0, 20.0, accent),
+                );
+            }
+            if date == last {
+                break;
+            }
+            date = date.succ_opt().ok_or("calendar date out of range")?;
         }
     }
     body += &text(

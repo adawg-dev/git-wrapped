@@ -567,3 +567,40 @@ fn render_report_is_safe_complete_and_deterministic() {
         .unwrap()
         .contains("No activity"));
 }
+
+#[test]
+fn render_heatmap_keeps_multidecade_history_readable() {
+    use git_wrapped::{
+        model::ActivityCell,
+        render::{render_report, Theme},
+    };
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-12-31T12:00:00 +0000");
+    let mut data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    data.repository.first_commit = "1960-01-01T12:00:00+00:00".into();
+    data.activity_heatmap = ["1960-01-01", "2024-01-01", "2024-01-02", "2024-12-31"]
+        .into_iter()
+        .map(|date| ActivityCell {
+            date: date.into(),
+            commits: 1,
+        })
+        .collect();
+    let out = tempfile::tempdir().unwrap();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    let svg = std::fs::read_to_string(out.path().join("activity-heatmap.svg")).unwrap();
+    assert!(svg.contains("Trailing 365 days · 2024-01-02 — 2024-12-31"));
+    assert!(!svg.contains("1960-01-01"));
+    assert!(!svg.contains("<title>2024-01-01:"));
+    assert!(svg.contains("<title>2024-01-02: 1 commits</title>"));
+    assert!(svg.contains("<title>2024-12-31: 1 commits</title>"));
+    assert!(svg.contains(">Jan</text>") && svg.contains(">Dec</text>"));
+    for size in svg.split("font-size=\"").skip(1) {
+        assert!(size.split('"').next().unwrap().parse::<u32>().unwrap() >= 16);
+    }
+    for rect in svg.split("<rect ").skip(2) {
+        for attr in ["width=\"", "height=\""] {
+            let value = rect.split(attr).nth(1).unwrap().split('"').next().unwrap();
+            assert!(value.parse::<f64>().unwrap() >= 16.0);
+        }
+    }
+}
