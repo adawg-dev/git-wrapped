@@ -483,3 +483,87 @@ fn scan_preserves_control_byte_path() {
     .unwrap();
     assert_eq!(paths, vec![b"prefix\x1esuffix".to_vec()]);
 }
+
+#[test]
+fn render_report_is_safe_complete_and_deterministic() {
+    use git_wrapped::render::{render_report, Theme};
+    let f = Fixture::new();
+    f.commit(
+        "a\t\u{1e}.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let mut data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    data.repository.name = "<script>&\"".into();
+    data.contributors[0].name = "Line\nBreak\u{85}".into();
+    data.commits[0].subject = "subject\t\u{1e}".into();
+    let out = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    render_report(&data, out.path(), Theme::Dark).unwrap();
+    render_report(&data, other.path(), Theme::Dark).unwrap();
+    for file in [
+        "summary.svg",
+        "contributors.svg",
+        "activity.svg",
+        "activity-heatmap.svg",
+        "awards/commit-machine.svg",
+        "awards/code-creator.svg",
+        "awards/code-destroyer.svg",
+        "awards/night-owl.svg",
+        "data.json",
+    ] {
+        let value = std::fs::read_to_string(out.path().join(file)).unwrap();
+        assert_eq!(
+            value,
+            std::fs::read_to_string(other.path().join(file)).unwrap()
+        );
+        if file.ends_with("svg") {
+            assert!(value.starts_with("<svg"));
+            assert!(!value.contains("<script>"));
+            assert!(!value.chars().any(|c| c.is_control() && !c.is_whitespace()));
+        }
+    }
+    let summary = std::fs::read_to_string(out.path().join("summary.svg")).unwrap();
+    assert!(summary.contains("&lt;script&gt;&amp;&quot;"));
+    assert!(summary.contains("#10131f"));
+    assert!(
+        std::fs::read_to_string(out.path().join("awards/night-owl.svg"))
+            .unwrap()
+            .contains("No eligible winner")
+    );
+    render_report(&data, other.path(), Theme::Light).unwrap();
+    assert!(std::fs::read_to_string(other.path().join("summary.svg"))
+        .unwrap()
+        .contains("#f7f7fc"));
+    // Sparse analysis months must retain their calendar spacing.
+    data.activity.push(git_wrapped::model::Activity {
+        month: "2024-03".into(),
+        commits: 2,
+        additions: 0,
+        deletions: 0,
+    });
+    render_report(&data, other.path(), Theme::Dark).unwrap();
+    let activity = std::fs::read_to_string(other.path().join("activity.svg")).unwrap();
+    assert!(activity.contains("2024-02: 0 commits"));
+    #[cfg(unix)]
+    {
+        let protected = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(protected.path(), "untouched").unwrap();
+        let linked = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(protected.path(), linked.path().join("summary.svg")).unwrap();
+        assert!(render_report(&data, linked.path(), Theme::Dark).is_err());
+        assert_eq!(
+            std::fs::read_to_string(protected.path()).unwrap(),
+            "untouched"
+        );
+    }
+    data.contributors.clear();
+    data.awards.clear();
+    data.activity.clear();
+    data.activity_heatmap.clear();
+    render_report(&data, other.path(), Theme::Dark).unwrap();
+    assert!(std::fs::read_to_string(other.path().join("activity.svg"))
+        .unwrap()
+        .contains("No activity"));
+}
