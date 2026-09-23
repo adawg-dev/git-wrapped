@@ -223,7 +223,13 @@ pub fn analyze_deep_with_cancel(
         if content.is_empty() {
             continue;
         }
-        let (lines, truncated) = blame::blame(repo, &path, limits.max_lines - counted_lines)?;
+        let (lines, truncated) = blame::blame(
+            repo,
+            &path,
+            limits.max_lines - counted_lines,
+            cancel,
+            start.checked_add(deadline),
+        )?;
         let mapped = blame::mapped_ids(repo, config, &lines)?;
         counted_lines += lines.len() as u64;
         for line in lines {

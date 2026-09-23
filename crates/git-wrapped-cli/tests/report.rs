@@ -166,6 +166,66 @@ fn deep_coverage_skips_gitlinks_and_stops_at_line_budget() {
 }
 
 #[test]
+fn deep_blame_stream_stops_at_line_budget_on_many_line_file() {
+    let f = Fixture::new();
+    let contents = (0..5000).map(|n| format!("line {n}\n")).collect::<String>();
+    f.commit(
+        "many.txt",
+        contents.as_bytes(),
+        "a@x",
+        "2024-01-01T10:00:00 +0000",
+    );
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(
+        &repo,
+        &Config::default(),
+        &mut data,
+        git_wrapped::deep::DeepLimits {
+            max_lines: 17,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let deep = data.deep.unwrap();
+    assert_eq!(deep.surviving_loc, 17);
+    assert_eq!(deep.coverage.attributed_lines, 17);
+    assert!(deep.coverage.truncated);
+}
+
+#[test]
+fn deep_blame_accepts_sha256_repository_if_git_supports_it() {
+    let dir = tempdir();
+    let init = Command::new("git")
+        .args(["init", "-q", "--object-format=sha256"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    if !init.status.success() {
+        return;
+    }
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["config", "user.name", "Test"]).status.success());
+    assert!(git(&["config", "user.email", "a@x"]).status.success());
+    fs::write(dir.path().join("a.txt"), b"one\n").unwrap();
+    assert!(git(&["add", "a.txt"]).status.success());
+    assert!(git(&["commit", "-qm", "first"]).status.success());
+    let repo = discover(dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    assert_eq!(data.commits[0].sha.len(), 64);
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    assert_eq!(data.deep.unwrap().coverage.attributed_lines, 1);
+}
+
+#[test]
 fn deep_cli_uses_distinct_cache_and_ownership_view() {
     let f = Fixture::new();
     f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
