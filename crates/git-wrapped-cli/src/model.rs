@@ -96,6 +96,8 @@ pub struct FileAnalytics {
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// Historical metrics belong to each changed file's immediate parent directory.
+/// Rows exist only for parents with changes; current files count recursively beneath each row.
 pub struct DirectoryAnalytics {
     pub path_id: String,
     pub display_path: String,

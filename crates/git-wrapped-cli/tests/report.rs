@@ -64,6 +64,31 @@ fn file_history_keeps_binary_rename_and_distinct_paths() {
     );
 }
 
+#[test]
+fn directory_history_uses_immediate_parent_and_recursive_head_count() {
+    let f = Fixture::new();
+    f.commit("src/lib/a.rs", b"a\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit(
+        "src/lib/deep/b.rs",
+        b"b\n",
+        "b@x",
+        "2024-01-02T10:00:00 +0000",
+    );
+    let data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    let lib = data
+        .directories
+        .iter()
+        .find(|dir| dir.display_path == "src/lib")
+        .unwrap();
+    assert_eq!(lib.commits, 1);
+    assert_eq!(lib.churn, 1);
+    assert_eq!(lib.current_file_count, 2);
+    assert!(data
+        .directories
+        .iter()
+        .all(|dir| dir.display_path != "src" && dir.display_path != "."));
+}
+
 #[cfg(unix)]
 #[test]
 fn file_history_distinguishes_non_utf8_paths_with_same_display() {
