@@ -11,6 +11,7 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10.4"
 resvg = { version = "=0.48.1", default-features = false, features = ["text"] }
+globset = "0.4.20"
 
 [dev-dependencies]
 tempfile = "3"

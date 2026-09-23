@@ -10,6 +10,7 @@ use crate::{
 };
 use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Timelike};
 use chrono_tz::Tz;
+use globset::{Glob, GlobSetBuilder};
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,
@@ -504,6 +505,31 @@ pub fn analyze_with_options(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
+    let excluded_patterns = if options.exclusions.starts_with(&config.exclude) {
+        options.exclusions.clone()
+    } else {
+        config
+            .exclude
+            .iter()
+            .chain(&options.exclusions)
+            .cloned()
+            .collect()
+    };
+    let mut excluded_builder = GlobSetBuilder::new();
+    for (index, pattern) in excluded_patterns.iter().enumerate() {
+        let source = if index < config.exclude.len() {
+            format!("{}: ", repo.root.join(".git-wrapped.json").display())
+        } else {
+            "".into()
+        };
+        excluded_builder
+            .add(Glob::new(pattern).map_err(|error| {
+                format!("{source}invalid exclude pattern {pattern:?}: {error}")
+            })?);
+    }
+    let excluded = excluded_builder
+        .build()
+        .map_err(|error| format!("invalid exclude patterns: {error}"))?;
     let mut contributors: BTreeMap<String, WorkingContributor> = BTreeMap::new();
     let mut activity: BTreeMap<String, Activity> = BTreeMap::new();
     let mut heatmap: BTreeMap<String, ActivityCell> = BTreeMap::new();
@@ -517,6 +543,7 @@ pub fn analyze_with_options(
     let mut total_commits = 0;
     let mut additions = 0;
     let mut deletions = 0;
+    let mut excluded_changes = 0;
 
     scan(repo, |raw| {
         let author_time = DateTime::parse_from_rfc3339(&raw.author_time)
@@ -555,6 +582,7 @@ pub fn analyze_with_options(
         }
         let mut commit_additions = 0;
         let mut commit_deletions = 0;
+        let mut files_changed = 0;
         let contributor = contributors
             .entry(id.clone())
             .or_insert_with(|| WorkingContributor {
@@ -598,6 +626,12 @@ pub fn analyze_with_options(
 
         let mut commit_directories = HashSet::new();
         for change in &raw.changes {
+            // Keep byte paths for IDs; use the same lossy display form only for glob matching.
+            if excluded.is_match(String::from_utf8_lossy(&change.path).as_ref()) {
+                add(&mut excluded_changes, 1)?;
+                continue;
+            }
+            files_changed += 1;
             add(&mut commit_additions, change.additions)?;
             add(&mut commit_deletions, change.deletions)?;
             contributor.files.insert(change.path.clone());
@@ -685,7 +719,7 @@ pub fn analyze_with_options(
             author_time: raw.author_time,
             committer_time: raw.committer_time,
             subject: raw.subject,
-            files_changed: raw.changes.len(),
+            files_changed,
             additions: commit_additions,
             deletions: commit_deletions,
         });
@@ -695,7 +729,10 @@ pub fn analyze_with_options(
     let (first, latest) = first
         .zip(latest)
         .ok_or("repository has no selected commits")?;
-    let head_paths = head_paths(repo)?;
+    let head_paths = head_paths(repo)?
+        .into_iter()
+        .filter(|path| !excluded.is_match(String::from_utf8_lossy(path).as_ref()))
+        .collect::<Vec<_>>();
     for path in &head_paths {
         let ext = extension(path);
         let ext_entry = extensions.entry(ext.clone()).or_insert(ExtensionAnalytics {
@@ -863,6 +900,8 @@ pub fn analyze_with_options(
             selected_since: options.since.map(|date| date.to_string()),
             selected_until: options.until.map(|date| date.to_string()),
             selected_authors,
+            excluded_patterns,
+            excluded_changes,
             timezone: options.timezone.to_string(),
             include_merges: options.include_merges,
             first_commit: first.to_rfc3339(),
@@ -876,7 +915,7 @@ pub fn analyze_with_options(
             churn: additions
                 .checked_add(deletions)
                 .ok_or("repository churn overflow")?,
-            tracked_files: repo.tracked_files,
+            tracked_files: head_paths.len(),
             tracked_files_scope: "HEAD".into(),
             shallow: repo.shallow,
         },

@@ -30,6 +30,8 @@ struct Cli {
     #[arg(long, global = true)]
     author: Vec<String>,
     #[arg(long, global = true)]
+    exclude: Vec<String>,
+    #[arg(long, global = true)]
     timezone: Option<TimezoneChoice>,
     #[arg(long, global = true)]
     no_merges: bool,
@@ -439,9 +441,14 @@ fn run(cli: Cli) -> Result<(), String> {
         since: cli.since,
         until: cli.until,
         author_ids: cli.author,
+        exclusions: config
+            .exclude
+            .iter()
+            .chain(cli.exclude.iter())
+            .cloned()
+            .collect(),
         timezone,
         include_merges: !cli.no_merges,
-        ..Default::default()
     };
     if !export {
         eprintln!("Analyzing Git history...");

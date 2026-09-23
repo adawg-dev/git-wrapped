@@ -34,7 +34,7 @@ git-wrapped awards [PATH]
 git-wrapped top commits|additions|deletions|churn|files [PATH]
 ```
 
-`PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Reports write `summary.png` at 2400×3200 by default; `--no-png` skips PNG generation (an earlier PNG in the same output directory is left alone). Export writes JSON to stdout; report commands write files and print a short summary. Focused commands print text, with up to 20 rows per list. `contributors` defaults to commits; `top` is a shortcut for its five named rankings, including `top files` for contributors by distinct files touched. `contributor` accepts an exact ID or a unique case-insensitive display name. `activity` defaults to month and shows the latest 20 periods. `archaeology` ranks changed paths by historical churn and marks paths absent from HEAD as historical. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
+`PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Reports write `summary.png` at 2400×3200 by default; `--no-png` skips PNG generation (an earlier PNG in the same output directory is left alone). Export writes JSON to stdout; report commands write files and print a short summary. Focused commands print text, with up to 20 rows per list. `contributors` defaults to commits; `top` is a shortcut for its five named rankings, including `top files` for contributors by distinct files touched. `contributor` accepts an exact ID or a unique case-insensitive display name. `activity` defaults to month and shows the latest 20 periods. `archaeology` ranks changed paths by historical churn and marks paths absent from HEAD as historical. Global `--exclude PATTERN` may repeat before or after a subcommand. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
 
 ## Report files
 
@@ -76,15 +76,19 @@ The four original award cards are always present; an ineligible award displays �
 - **Commit concentration proxy:** JSON's `bus_factor_proxy` is the smallest number of normalized contributors whose commits cover at least half the selected commits. It describes commit concentration, not the actual bus factor or project resilience.
 - **Growth and release timing:** Monthly net growth is additions minus deletions, not current lines of code. Churn is additions plus deletions. Release intervals use reachable tags on distinct target commits and are descriptive; tags do not add commits.
 
-Git's `.mailmap` is applied before aliases from `.git-wrapped.json`. The config currently accepts only contributor aliases:
+Git's `.mailmap` is applied before aliases from `.git-wrapped.json`. The config can also set a timezone and opt-in path exclusions:
 
 ```json
 {
   "contributors": {
     "Ada": ["ada@example.com", "ada@work.example"]
-  }
+  },
+  "timezone": "utc",
+  "exclude": ["**/*.lock", "vendor/**"]
 }
 ```
+
+No paths are excluded by default. Config patterns run first, then any `--exclude` patterns; `--timezone` overrides the config timezone. Exclusions match the changed path (the new path for a rename) after commit selection. A matched change contributes no file or line metrics, but its commit still counts. HEAD tracked-file counts and current file/extension/directory counts also omit matching paths. JSON records the exact `excluded_patterns` and the number of selected historical changes omitted as `excluded_changes`. Patterns match the lossy UTF-8 display form of a path; raw byte paths still have distinct IDs. Invalid patterns report their source and pattern.
 
 Contributor IDs are case-folded email addresses (or normalized names when email is blank). Raw author identities remain in commit data. Git Wrapped uses HEAD-reachable local history, its merge and binary rules, and those identity rules, so totals can differ from GitHub or GitLab displays.
 

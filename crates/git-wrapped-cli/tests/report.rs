@@ -9,6 +9,152 @@ use git_wrapped::config::{normalize, Config};
 use git_wrapped::git::{discover, reachable_tag_dates, scan};
 use std::{fs, process::Command};
 
+#[test]
+fn exclusions_keep_commits_and_filter_history_and_head_paths() {
+    let f = Fixture::new();
+    f.commit("Cargo.lock", b"lock\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit(
+        "vendor/dependency.rs",
+        b"vendor\n",
+        "a@x",
+        "2024-01-02T10:00:00 +0000",
+    );
+    f.commit(
+        "src/main.rs",
+        b"source\n",
+        "a@x",
+        "2024-01-03T10:00:00 +0000",
+    );
+    fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"exclude":["**/*.lock"],"contributors":{}}"#,
+    )
+    .unwrap();
+    let repo = discover(f.dir.path()).unwrap();
+    let config = Config::load(&repo.root).unwrap();
+    let from_config = analyze_with_options(&repo, &config, &Default::default()).unwrap();
+    assert_eq!(from_config.repository.total_commits, 3);
+    assert_eq!(from_config.repository.additions, 2);
+    assert_eq!(from_config.repository.excluded_changes, 1);
+    let exported = cli(
+        &[
+            "--exclude".as_ref(),
+            "vendor/**".as_ref(),
+            "export".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+    assert_eq!(json["repository"]["total_commits"], 3);
+    assert_eq!(json["repository"]["additions"], 1);
+    assert_eq!(json["repository"]["tracked_files"], 1);
+    assert_eq!(json["repository"]["excluded_changes"], 2);
+    assert_eq!(
+        json["repository"]["excluded_patterns"],
+        serde_json::json!(["**/*.lock", "vendor/**"])
+    );
+    assert_eq!(json["files"].as_array().unwrap().len(), 1);
+    assert_eq!(json["files"][0]["display_path"], "src/main.rs");
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_paths_keep_distinct_ids_while_matching_lossy_display() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let f = Fixture::new();
+    let git_input = |args: &[&str], input: &[u8]| {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(f.dir.path())
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let blob = git_input(&["hash-object", "-w", "--stdin"], b"line\n");
+    let mut tree_input = Vec::new();
+    for suffix in [0xfe, 0xff] {
+        tree_input.extend_from_slice(format!("100644 blob {blob}\t").as_bytes());
+        tree_input.extend_from_slice(&[b'a', suffix, b'.', b'r', b's', 0]);
+    }
+    let tree = git_input(&["mktree", "-z"], &tree_input);
+    let commit = git_input(&["commit-tree", &tree], b"non utf8\n");
+    assert!(f
+        .git(&["update-ref", "refs/heads/master", &commit])
+        .status
+        .success());
+    let repo = discover(f.dir.path()).unwrap();
+    let plain = analyze(&repo, &Config::default()).unwrap();
+    assert_eq!(plain.files.len(), 2);
+    assert_eq!(plain.files[0].display_path, "a�.rs");
+    assert_eq!(plain.files[1].display_path, "a�.rs");
+    assert_ne!(plain.files[0].path_id, plain.files[1].path_id);
+    let filtered = analyze_with_options(
+        &repo,
+        &Config::default(),
+        &AnalysisOptions {
+            exclusions: vec!["a�.rs".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(filtered.repository.total_commits, 1);
+    assert_eq!(filtered.repository.excluded_changes, 2);
+    assert!(filtered.files.is_empty());
+}
+
+#[test]
+fn invalid_config_exclusion_names_file_and_pattern() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"exclude":["["]}"#,
+    )
+    .unwrap();
+    let repo = discover(f.dir.path()).unwrap();
+    let config = Config::load(&repo.root).unwrap();
+    let error = analyze_with_options(&repo, &config, &Default::default()).unwrap_err();
+    assert!(
+        error.contains(".git-wrapped.json") && error.contains("["),
+        "{error}"
+    );
+}
+
+#[test]
+fn config_timezone_is_used_unless_cli_overrides_it() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T23:30:00 -0800");
+    fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"timezone":"utc"}"#,
+    )
+    .unwrap();
+    let from_config = cli(&["export".as_ref()], f.dir.path());
+    assert!(from_config.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&from_config.stdout).unwrap();
+    assert_eq!(json["repository"]["timezone"], "utc");
+    let override_zone = cli(
+        &["--timezone".as_ref(), "commit".as_ref(), "export".as_ref()],
+        f.dir.path(),
+    );
+    assert!(override_zone.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&override_zone.stdout).unwrap();
+    assert_eq!(json["repository"]["timezone"], "commit");
+}
+
 fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_git-wrapped"))
         .current_dir(cwd)

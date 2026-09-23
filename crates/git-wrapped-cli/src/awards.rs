@@ -232,6 +232,8 @@ mod tests {
                 churn: 0,
                 tracked_files: 0,
                 tracked_files_scope: "HEAD".into(),
+                excluded_patterns: Vec::new(),
+                excluded_changes: 0,
                 shallow: false,
             },
             contributors,

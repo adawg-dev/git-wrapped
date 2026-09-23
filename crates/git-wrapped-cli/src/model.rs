@@ -195,6 +195,8 @@ pub struct RepositoryMetadata {
     pub selected_since: Option<String>,
     pub selected_until: Option<String>,
     pub selected_authors: Vec<String>,
+    pub excluded_patterns: Vec<String>,
+    pub excluded_changes: u64,
     pub timezone: String,
     pub include_merges: bool,
     pub first_commit: String,
@@ -234,6 +236,9 @@ impl RepositoryMetadata {
         }
         if !self.include_merges {
             labels.push("Merges excluded".into());
+        }
+        if !self.excluded_patterns.is_empty() {
+            labels.push(format!("Excluded {} file changes", self.excluded_changes));
         }
         labels
     }

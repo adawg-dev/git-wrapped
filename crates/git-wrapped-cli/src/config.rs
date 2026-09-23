@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, fs, io::ErrorKind, path::Path};
 pub struct Config {
     aliases: BTreeMap<String, (String, String)>,
     pub timezone: Option<String>,
+    pub exclude: Vec<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -13,6 +14,7 @@ pub struct Config {
 struct ConfigFile {
     contributors: BTreeMap<String, Vec<String>>,
     timezone: Option<String>,
+    exclude: Vec<String>,
 }
 
 impl Config {
@@ -35,6 +37,7 @@ impl Config {
             .map_err(|error| format!("{}: {error}", path.display()))?;
         let mut config = Self {
             timezone: file.timezone,
+            exclude: file.exclude,
             ..Self::default()
         };
         for (name, addresses) in file.contributors {
