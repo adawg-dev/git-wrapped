@@ -4,6 +4,197 @@ use git_wrapped::analysis::analyze;
 use git_wrapped::awards::select_awards;
 use git_wrapped::config::{normalize, Config};
 use git_wrapped::git::{discover, scan};
+use std::{fs, process::Command};
+
+fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_git-wrapped"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn explicit_repo_creates_first_report() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let out = tempfile::tempdir().unwrap();
+    let output = out.path().join("report with spaces");
+    let result = cli(
+        &[
+            f.dir.path().as_os_str(),
+            "--output".as_ref(),
+            output.as_os_str(),
+        ],
+        out.path(),
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut entries: Vec<_> = fs::read_dir(&output)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        [
+            "activity-heatmap.svg",
+            "activity.svg",
+            "awards",
+            "contributors.svg",
+            "data.json",
+            "summary.svg"
+        ]
+    );
+    assert!(output.join("awards/commit-machine.svg").is_file());
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains("1 commit · 1 contributor"));
+    assert!(stdout.contains("lifetime additions"));
+    assert!(stdout.contains(output.to_str().unwrap()));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Analyzing Git history"));
+}
+
+#[test]
+fn default_and_report_commands_use_invocation_directory() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    for args in [vec![], vec!["report".as_ref()]] {
+        let result = cli(&args, f.dir.path());
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(f.dir.path().join("git-wrapped-report/data.json").is_file());
+    }
+    let help = cli(&["--help".as_ref()], f.dir.path());
+    assert!(help.status.success());
+    let ambiguous = cli(&[f.dir.path().as_os_str(), "report".as_ref()], f.dir.path());
+    assert!(!ambiguous.status.success());
+    assert!(String::from_utf8_lossy(&ambiguous.stderr)
+        .contains("repository path cannot precede a subcommand"));
+}
+
+#[test]
+fn export_is_valid_json_only() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let result = cli(
+        &[
+            "export".as_ref(),
+            "--format".as_ref(),
+            "json".as_ref(),
+            f.dir.path().as_os_str(),
+        ],
+        f.dir.path(),
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let data: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(data["repository"]["total_commits"], 1);
+    assert!(!f.dir.path().join("git-wrapped-report").exists());
+}
+
+#[test]
+fn cli_errors_leave_output_intact() {
+    let f = Fixture::new();
+    let out = tempfile::tempdir().unwrap();
+    let output = out.path().join("report");
+    fs::create_dir(&output).unwrap();
+    fs::write(output.join("sentinel"), b"keep").unwrap();
+    let args = [
+        f.dir.path().as_os_str(),
+        "--output".as_ref(),
+        output.as_os_str(),
+    ];
+    let empty = cli(&args, out.path());
+    assert!(!empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("no commits"));
+    assert!(!output.join("data.json").exists());
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    fs::write(f.dir.path().join(".git-wrapped.json"), b"{").unwrap();
+    let malformed = cli(&args, out.path());
+    assert!(!malformed.status.success());
+    assert!(String::from_utf8_lossy(&malformed.stderr).contains(".git-wrapped.json"));
+    assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+}
+
+#[test]
+fn terminal_output_sanitizes_control_characters_and_warns_for_shallow_history() {
+    let f = Fixture::new();
+    f.commit(
+        "a.txt",
+        b"a\n",
+        "a@example.com",
+        "2024-01-01T12:00:00 +0000",
+    );
+    let subject = "bad\x1b[31m subject";
+    assert!(f
+        .git(&["commit", "--allow-empty", "-qm", subject])
+        .status
+        .success());
+    let output = cli(&["export".as_ref(), f.dir.path().as_os_str()], f.dir.path());
+    assert!(output.status.success());
+    assert!(!output.stderr.contains(&0x1b));
+    let shallow = tempfile::tempdir().unwrap();
+    let clone = shallow.path().join("clone");
+    let cloned = Command::new("git")
+        .args([
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &format!("file://{}", f.dir.path().display()),
+            clone.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cloned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cloned.stderr)
+    );
+    let result = cli(
+        &[
+            clone.as_os_str(),
+            "--output".as_ref(),
+            shallow.path().join("out").as_os_str(),
+        ],
+        shallow.path(),
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("available history"));
+}
 
 fn authored_commit(f: &Fixture, email: &str, date: &str, args: &[&str]) {
     let output = std::process::Command::new("git")
