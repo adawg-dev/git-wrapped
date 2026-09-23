@@ -6,7 +6,13 @@ use std::{
     io::{BufRead, BufReader},
     os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
 };
 
 #[derive(Debug)]
@@ -314,10 +320,11 @@ pub fn scan(
 pub fn scan_with_cancel(
     repo: &Repository,
     cancel: &CancelFlag,
-    mut visit: impl FnMut(RawCommit) -> Result<(), String>,
+    visit: impl FnMut(RawCommit) -> Result<(), String>,
 ) -> Result<(), String> {
     cancel.check()?;
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(&repo.root)
         .args([
@@ -333,22 +340,51 @@ pub fn scan_with_cancel(
             "-z",
             "--format=%x1e%H%x00%P%x00%an%x00%ae%x00%aN%x00%aE%x00%aI%x00%cI%x00%s%x00",
         ])
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1");
+    scan_command_with_cancel(command, cancel, visit)
+}
+
+fn scan_command_with_cancel(
+    mut command: Command,
+    cancel: &CancelFlag,
+    mut visit: impl FnMut(RawCommit) -> Result<(), String>,
+) -> Result<(), String> {
+    cancel.check()?;
+    let mut child = command
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot run git log: {e}"))?;
-    let result = parse(
-        &mut BufReader::new(child.stdout.take().unwrap()),
-        &mut |commit| {
-            cancel.check()?;
-            visit(commit)
-        },
-    );
-    if result.is_err() || cancel.is_cancelled() {
-        let _ = child.kill();
+    let stdout = child.stdout.take().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let watcher_stop = Arc::clone(&stop);
+    let watcher_flag = cancel.clone();
+    let watcher = thread::spawn(move || -> Result<ExitStatus, String> {
+        loop {
+            if watcher_flag.is_cancelled() || watcher_stop.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                return child.wait().map_err(|e| e.to_string());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error.to_string());
+                }
+            }
+        }
+    });
+    let result = parse(&mut BufReader::new(stdout), &mut |commit| {
+        cancel.check()?;
+        visit(commit)
+    });
+    if result.is_err() {
+        stop.store(true, Ordering::SeqCst);
     }
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let outcome = watcher.join();
     cancel.check()?;
+    let status = outcome.map_err(|_| "git log watcher panicked".to_string())??;
     result?;
     if !status.success() {
         return Err(format!("git log exited with {status}"));
@@ -359,6 +395,63 @@ pub fn scan_with_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_scan_interrupts_and_reaps_a_stalled_git_child() {
+        use std::{sync::mpsc, thread, time::Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "echo $$ > \"$1\"; printf '\\036'; exec sleep 30",
+                "sh",
+            ])
+            .arg(&pid_file);
+        let flag = CancelFlag::default();
+        let scan_flag = flag.clone();
+        let (sender, receiver) = mpsc::channel();
+        let scan = thread::spawn(move || {
+            sender
+                .send(scan_command_with_cancel(command, &scan_flag, |_| Ok(())))
+                .unwrap();
+        });
+        let pid = (0..100)
+            .find_map(|_| {
+                let pid = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<u32>().ok());
+                if pid.is_none() {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                pid
+            })
+            .expect("fake Git child never started");
+        thread::sleep(Duration::from_millis(30));
+        flag.cancel();
+        let result = receiver.recv_timeout(Duration::from_secs(2));
+        if result.is_err() {
+            let _ = Command::new("kill")
+                .arg(pid.to_string())
+                .stderr(Stdio::null())
+                .status();
+        }
+        assert!(result
+            .expect("scan did not stop promptly")
+            .unwrap_err()
+            .contains("cancelled"));
+        scan.join().unwrap();
+        assert!(!Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+    }
+
     fn record(changes: &[u8]) -> Vec<u8> {
         let mut bytes = format!("\x1e{}\0\0Test\0test@example.com\0Test\0test@example.com\02024-01-01T10:00:00+00:00\02024-01-01T10:00:00+00:00\0subject\0\0\n", "a".repeat(40)).into_bytes();
         bytes.extend_from_slice(changes);
