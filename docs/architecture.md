@@ -11,6 +11,6 @@ Git repository
   → render.rs (SVG report and data.json) / JSON stdout export
 ```
 
-`git.rs` invokes Git with explicit arguments and reads a null-delimited stream. It does not execute repository code. `analysis.rs` uses one scan to compute repository, contributor, commit, and activity records. `render.rs` consumes that dataset, escapes dynamic SVG text, and writes fixed artifact names; the CLI sanitizes terminal text. Reports are deterministic for the same history and alias configuration.
+`git.rs` invokes Git with explicit arguments and reads a null-delimited stream. It does not execute repository code. `analysis.rs` measures repository age in elapsed full 24-hour days, while activity uses author-local dates and hours. It uses one scan to compute repository, contributor, commit, and activity records. `render.rs` consumes that dataset, escapes dynamic SVG text, and writes fixed artifact names; the CLI sanitizes terminal text. Reports are deterministic for the same history and alias configuration.
 
-The current model covers historical activity and line changes. Ownership, code survival, caching, optional external analyzers, PNG, a terminal explorer, and animation are later independent phases; they have no placeholder crates or commands here. The [handoff spec](../git-wrapped-handoff.md) describes that broader direction.
+The current model covers historical activity and line changes. Ownership, code survival, caching, optional external analyzers, PNG, a terminal explorer, and animation are later independent phases; they have no placeholder crates or commands here.

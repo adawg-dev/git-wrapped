@@ -297,7 +297,7 @@ fn analysis_counts_history_and_serializes_deterministically() {
         (5, 1, 4, 6)
     );
     assert_eq!(data.repository.tracked_files, 3);
-    assert_eq!(data.repository.age_days, 6);
+    assert_eq!(data.repository.age_days, 5);
     assert_eq!(data.repository.first_commit, "2024-01-01T23:30:00-08:00");
     assert_eq!(data.repository.latest_commit, "2024-01-07T15:00:00+00:00");
     let alice = &data.contributors[0];
@@ -808,4 +808,133 @@ fn render_heatmap_keeps_multidecade_history_readable() {
             assert!(value.parse::<f64>().unwrap() >= 16.0);
         }
     }
+}
+
+#[test]
+fn export_never_runs_repository_signature_program() {
+    use std::{io::Write, os::unix::fs::PermissionsExt, process::Stdio};
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-01T12:00:00 +0000");
+    let tree = String::from_utf8(f.git(&["rev-parse", "HEAD^{tree}"]).stdout).unwrap();
+    let commit = format!("tree {}\nauthor Test <a@x> 1704110400 +0000\ncommitter Test <a@x> 1704110400 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n fake\n -----END PGP SIGNATURE-----\n\nfixture\n", tree.trim());
+    let mut hash = Command::new("git")
+        .arg("-C")
+        .arg(f.dir.path())
+        .args(["hash-object", "-t", "commit", "-w", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    hash.stdin
+        .take()
+        .unwrap()
+        .write_all(commit.as_bytes())
+        .unwrap();
+    let hashed = hash.wait_with_output().unwrap();
+    assert!(hashed.status.success());
+    let sha = String::from_utf8(hashed.stdout).unwrap();
+    assert!(f.git(&["update-ref", "HEAD", sha.trim()]).status.success());
+    let program = f.dir.path().join("verify-signature");
+    fs::write(
+        &program,
+        "#!/bin/sh\nprintf executed > signature-marker\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(f
+        .git(&["config", "gpg.program", program.to_str().unwrap()])
+        .status
+        .success());
+    assert!(f
+        .git(&["config", "log.showSignature", "true"])
+        .status
+        .success());
+    let result = cli(&["export".as_ref()], f.dir.path());
+    assert!(
+        !f.dir.path().join("signature-marker").exists(),
+        "repository signature program executed"
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let data: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(data["repository"]["total_commits"], 1);
+}
+
+#[test]
+fn default_report_rejects_symlink_root_before_writes() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-01T12:00:00 +0000");
+    let external = tempfile::tempdir().unwrap();
+    fs::write(external.path().join("summary.svg"), "untouched").unwrap();
+    std::os::unix::fs::symlink(external.path(), f.dir.path().join("git-wrapped-report")).unwrap();
+    let result = cli(&[], f.dir.path());
+    assert_eq!(
+        fs::read_to_string(external.path().join("summary.svg")).unwrap(),
+        "untouched"
+    );
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("symlink"));
+    assert_eq!(fs::read_dir(external.path()).unwrap().count(), 1);
+}
+
+fn cross_offset_data() -> git_wrapped::model::RepositoryAnalytics {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-02T00:30:00 +1400");
+    f.commit("b", b"b\n", "a@x", "2024-01-01T23:30:00 -1200");
+    analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap()
+}
+
+#[test]
+fn cross_offset_age_counts_elapsed_full_days() {
+    let data = cross_offset_data();
+    // The instants are 25 hours apart, despite reversed local dates.
+    assert_eq!(data.repository.age_days, 1);
+    assert_eq!(data.contributors[0].commits_by_hour[0], 1);
+    assert_eq!(data.contributors[0].commits_by_hour[23], 1);
+}
+
+#[test]
+fn cross_offset_heatmap_includes_latest_activity_date() {
+    let data = cross_offset_data();
+    let out = tempfile::tempdir().unwrap();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("activity-heatmap.svg")).unwrap();
+    assert!(svg.contains("<title>2024-01-01: 1 commits</title>"));
+    assert!(svg.contains("<title>2024-01-02: 1 commits</title>"));
+}
+
+#[test]
+fn activity_maximum_bar_reaches_axis_maximum() {
+    let data = cross_offset_data();
+    let out = tempfile::tempdir().unwrap();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("activity.svg")).unwrap();
+    assert!(svg.contains("<text x=\"64\" y=\"200\""));
+    assert!(svg.contains("<rect x=\"110.00\" y=\"200.00\" width=\"808.00\" height=\"470.00\""));
+}
+
+#[test]
+fn summary_sparkline_uses_only_observed_months() {
+    let mut data = cross_offset_data();
+    let out = tempfile::tempdir().unwrap();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
+    assert!(svg.contains("<circle cx=\"64\" cy=\"563.00\" r=\"4\""));
+    assert!(!svg.contains("<polyline"));
+    data.activity.push(git_wrapped::model::Activity {
+        month: "2024-02".into(),
+        commits: 1,
+        additions: 0,
+        deletions: 0,
+    });
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
+    assert!(svg.contains("points=\"64.00,563.00 1131.00,593.00\""));
 }

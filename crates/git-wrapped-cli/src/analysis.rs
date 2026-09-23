@@ -210,7 +210,7 @@ pub fn analyze(repo: &Repository, config: &Config) -> Result<RepositoryAnalytics
             name: repo.name.clone(),
             first_commit: first.to_rfc3339(),
             latest_commit: latest.to_rfc3339(),
-            age_days: (latest.date_naive() - first.date_naive()).num_days(),
+            age_days: (latest - first).num_days(),
             total_commits,
             total_contributors: contributors.len(),
             additions,

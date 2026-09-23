@@ -77,6 +77,12 @@ pub fn render_report(
         Theme::Dark => ("#10131f", "#f4f5fb", "#8f7cff", "#a7aec6"),
         Theme::Light => ("#f7f7fc", "#172033", "#5b43c9", "#535e76"),
     };
+    if fs::symlink_metadata(output).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!(
+            "refusing symlink output directory: {}",
+            output.display()
+        ));
+    }
     fs::create_dir_all(output.join("awards"))
         .map_err(|e| format!("create {}: {e}", output.display()))?;
     let write = |name: &str, height, body: String| -> Result<(), String> {
@@ -155,11 +161,12 @@ pub fn render_report(
         530,
         16,
         muted,
-        "ACTIVITY · 12 BUCKETS ACROSS ANALYZED MONTHS",
+        "ACTIVITY · UP TO 12 BUCKETS ACROSS ANALYZED MONTHS",
     );
-    let mut buckets = [0_u64; 12];
+    let mut buckets = vec![0_u64; months.len().min(12)];
+    let bucket_count = buckets.len();
     for (i, (_, count)) in months.iter().enumerate() {
-        buckets[i * 12 / months.len()] += count;
+        buckets[i * bucket_count / months.len()] += count;
     }
     let max = buckets.iter().copied().max().unwrap_or(1).max(1) as f64;
     let points = buckets
@@ -168,15 +175,19 @@ pub fn render_report(
         .map(|(i, n)| {
             format!(
                 "{:.2},{:.2}",
-                64.0 + i as f64 * 97.0,
+                64.0 + i as f64 * 1067.0 / bucket_count.saturating_sub(1).max(1) as f64,
                 623.0 - *n as f64 / max * 60.0
             )
         })
         .collect::<Vec<_>>()
         .join(" ");
-    body += &format!(
-        "<polyline points=\"{points}\" fill=\"none\" stroke=\"{accent}\" stroke-width=\"4\"/>"
-    );
+    if bucket_count == 1 {
+        body += &format!("<circle cx=\"64\" cy=\"563.00\" r=\"4\" fill=\"{accent}\"/>");
+    } else if bucket_count > 1 {
+        body += &format!(
+            "<polyline points=\"{points}\" fill=\"none\" stroke=\"{accent}\" stroke-width=\"4\"/>"
+        );
+    }
     write("summary.svg", 675, body)?;
 
     let mut body = heading("The people behind the commits");
@@ -214,16 +225,25 @@ pub fn render_report(
 
     let mut body = heading("Every month tells a story");
     let max = months.iter().map(|a| a.1).max().unwrap_or(1).max(1) as f64;
-    body += &format!("<path d=\"M 100 200 V 670 H 1136\" fill=\"none\" stroke=\"{muted}\"/>");
-    body += &text(64, 200, 16, muted, &format!("{max:.0}"));
-    body += &text(64, 670, 16, muted, "0");
+    let (plot_top, plot_bottom) = (200, 670);
+    body += &format!(
+        "<path d=\"M 100 {plot_top} V {plot_bottom} H 1136\" fill=\"none\" stroke=\"{muted}\"/>"
+    );
+    body += &text(64, plot_top, 16, muted, &format!("{max:.0}"));
+    body += &text(64, plot_bottom, 16, muted, "0");
     let step = 1010.0 / months.len().max(1) as f64;
     for (i, a) in months.iter().enumerate() {
-        let h = a.1 as f64 / max * 440.0;
+        let h = a.1 as f64 / max * (plot_bottom - plot_top) as f64;
         body += &format!(
             "<g><title>{}</title>{}</g>",
             escape_xml(&format!("{}: {} commits", a.0, a.1)),
-            rect(110.0 + i as f64 * step, 670.0 - h, step * 0.8, h, accent)
+            rect(
+                110.0 + i as f64 * step,
+                plot_bottom as f64 - h,
+                step * 0.8,
+                h,
+                accent
+            )
         );
         if i % months.len().div_ceil(8).max(1) == 0 {
             body += &text((110.0 + i as f64 * step) as u32, 704, 15, muted, &a.0);
@@ -252,11 +272,7 @@ pub fn render_report(
                 .map(|d| (d, c.commits))
         })
         .collect();
-    if let Some(last) =
-        NaiveDate::parse_from_str(r.latest_commit.split('T').next().unwrap_or(""), "%Y-%m-%d")
-            .ok()
-            .or_else(|| cells.iter().map(|c| c.0).max())
-    {
+    if let Some(last) = cells.iter().map(|c| c.0).max() {
         let first = last
             .checked_sub_days(chrono::Days::new(364))
             .ok_or("calendar window out of range")?;

@@ -230,6 +230,7 @@ pub fn scan(
             "HEAD",
             "--root",
             "--no-ext-diff",
+            "--no-show-signature",
             "--no-textconv",
             "--find-renames",
             "--numstat",
