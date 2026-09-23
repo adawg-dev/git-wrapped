@@ -1,6 +1,66 @@
 mod common;
 use common::Fixture;
+use git_wrapped::config::{normalize, Config};
 use git_wrapped::git::{discover, scan};
+
+#[test]
+fn mailmap_then_aliases_preserve_raw_author() {
+    let f = Fixture::new();
+    f.commit(
+        "nested/old",
+        b"old\n",
+        "old@example.com",
+        "2024-01-01T10:00:00 +0000",
+    );
+    f.commit(
+        "other",
+        b"other\n",
+        "other@example.com",
+        "2024-01-02T10:00:00 +0000",
+    );
+    std::fs::write(
+        f.dir.path().join(".mailmap"),
+        "Correct Name <correct@example.com> <old@example.com>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"contributors":{"Team Member":["correct@example.com","OTHER@EXAMPLE.COM"]}}"#,
+    )
+    .unwrap();
+    let repo = discover(&f.dir.path().join("nested")).unwrap();
+    let config = Config::load(&repo.root).unwrap();
+    let mut commits = Vec::new();
+    scan(&repo, |commit| {
+        commits.push(commit);
+        Ok(())
+    })
+    .unwrap();
+    let old = commits
+        .iter()
+        .find(|c| c.raw_author.email == "old@example.com")
+        .unwrap();
+    assert_eq!(old.mapped_author.email, "correct@example.com");
+    assert_eq!(old.raw_author.email, "old@example.com");
+    assert_eq!(
+        normalize(&old.mapped_author, &config),
+        ("correct@example.com".into(), "Team Member".into())
+    );
+    assert_eq!(
+        normalize(&commits[0].mapped_author, &config),
+        normalize(&commits[1].mapped_author, &config)
+    );
+}
+
+#[test]
+fn malformed_config_error_names_discovered_root_file() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@example.com", "2024-01-01T10:00:00 +0000");
+    std::fs::write(f.dir.path().join(".git-wrapped.json"), "{").unwrap();
+    let repo = discover(f.dir.path()).unwrap();
+    let error = Config::load(&repo.root).err().unwrap();
+    assert!(error.contains(&repo.root.join(".git-wrapped.json").display().to_string()));
+}
 
 #[test]
 fn discovers_nested_repository_and_rejects_empty_history() {
