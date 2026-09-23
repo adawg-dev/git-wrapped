@@ -150,6 +150,8 @@ mod tests {
             commits: vec![],
             activity: vec![],
             activity_heatmap: vec![],
+            activity_by_week: vec![],
+            insights: Default::default(),
             files: vec![],
             directories: vec![],
             extensions: vec![],

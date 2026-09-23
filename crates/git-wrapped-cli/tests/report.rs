@@ -1,9 +1,9 @@
 mod common;
 use common::Fixture;
-use git_wrapped::analysis::analyze;
+use git_wrapped::analysis::{activity_by_day, activity_by_month, analyze};
 use git_wrapped::awards::select_awards;
 use git_wrapped::config::{normalize, Config};
-use git_wrapped::git::{discover, scan};
+use git_wrapped::git::{discover, reachable_tag_dates, scan};
 use std::{fs, process::Command};
 
 fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output {
@@ -12,6 +12,116 @@ fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output
         .args(args)
         .output()
         .unwrap()
+}
+
+#[test]
+fn streaks_and_peaks_use_author_calendar_not_wall_clock() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-01T23:00:00 -0800");
+    f.commit("b", b"b\n", "a@x", "2024-01-02T00:01:00 +1400");
+    f.commit("c", b"c\n", "a@x", "2024-03-01T12:00:00 +0000");
+    let x = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    assert_eq!(x.insights.longest_streak, 2);
+    assert_eq!(x.insights.current_streak, 1);
+    assert_eq!(x.insights.busiest_day.as_ref().unwrap().label, "2024-01-01");
+    assert_eq!(x.insights.busiest_month.as_ref().unwrap().label, "2024-01");
+    assert_eq!(x.insights.peak_hour.as_ref().unwrap().label, "00");
+    assert_eq!(x.activity_by_week.len(), 9);
+    assert!((x.insights.burstiness.unwrap() - 2.0).abs() < 1e-12);
+    let days = activity_by_day(&x).unwrap();
+    assert_eq!(days.len(), 61);
+    assert_eq!(days[2].date, "2024-01-03");
+    assert_eq!(days[2].commits, 0);
+}
+
+#[test]
+fn sparse_history_zero_fills_months_without_storing_days() {
+    let f = Fixture::new();
+    f.commit("b", b"b\n", "a@x", "2024-01-01T12:00:00 +0000");
+    let mut x = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    // Git rejects pre-epoch author dates; use a sparse historical analytics fixture.
+    x.activity.insert(
+        0,
+        git_wrapped::model::Activity {
+            month: "1960-01".into(),
+            commits: 1,
+            additions: 1,
+            deletions: 0,
+        },
+    );
+    x.activity_heatmap.insert(
+        0,
+        git_wrapped::model::ActivityCell {
+            date: "1960-01-01".into(),
+            commits: 1,
+        },
+    );
+    let months = activity_by_month(&x).unwrap();
+    assert_eq!(months.len(), 769);
+    assert_eq!(months[0].month, "1960-01");
+    assert_eq!(months[1].month, "1960-02");
+    assert_eq!(months[1].commits, 0);
+    assert_eq!(months.last().unwrap().month, "2024-01");
+    assert_eq!(x.activity_heatmap.len(), 2);
+    assert_eq!(x.activity_by_week.len(), 1);
+    assert!(activity_by_day(&x).unwrap_err().contains("20,000"));
+    assert!(serde_json::to_value(&x)
+        .unwrap()
+        .get("activity_by_day")
+        .is_none());
+}
+
+#[test]
+fn weekly_activity_rejects_more_than_twenty_thousand_buckets() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-01T12:00:00 +0000");
+    // Git accepts the raw positive epoch for 2500 even though it rejects ISO dates there.
+    f.commit("b", b"b\n", "a@x", "@16725268800 +0000");
+    let error = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap_err();
+    assert!(
+        error.contains("weekly activity exceeds 20,000 buckets"),
+        "{error}"
+    );
+}
+
+#[test]
+fn reachable_lightweight_and_annotated_tags_set_release_cadence() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2024-01-01T12:00:00 +0000");
+    assert!(f.git(&["tag", "v1"]).status.success());
+    f.commit("b", b"b\n", "a@x", "2024-01-11T12:00:00 +0000");
+    assert!(f
+        .git(&["tag", "-a", "v2", "-m", "release"])
+        .status
+        .success());
+    f.commit("c", b"c\n", "a@x", "2024-01-21T12:00:00 +0000");
+    assert!(f.git(&["tag", "unreachable"]).status.success());
+    assert!(f.git(&["reset", "--hard", "HEAD~1"]).status.success());
+    let repo = discover(f.dir.path()).unwrap();
+    let tags = reachable_tag_dates(&repo).unwrap();
+    assert_eq!(
+        tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(),
+        ["v1", "v2"]
+    );
+    let x = analyze(&repo, &Config::default()).unwrap();
+    assert_eq!(x.insights.first_tag_days, Some(0));
+    assert_eq!(x.insights.release_interval_median_days, Some(10.0));
+}
+
+#[test]
+fn growth_churn_and_commit_records_use_canonical_counts() {
+    let f = Fixture::new();
+    f.commit("a", b"one\ntwo\n", "a@x", "2024-01-01T12:00:00 +0000");
+    f.commit("a", b"one\n", "b@x", "2024-02-01T12:00:00 +0000");
+    f.commit("b", b"new\n", "c@x", "2024-03-01T12:00:00 +0000");
+    let x = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    let i = &x.insights;
+    assert_eq!(i.highest_growth_month.as_ref().unwrap().label, "2024-01");
+    assert_eq!(i.highest_growth_month.as_ref().unwrap().count, 2);
+    assert_eq!(i.highest_churn_month.as_ref().unwrap().label, "2024-01");
+    assert_eq!(i.largest_commit.as_ref().unwrap().additions, 2);
+    assert_eq!(i.largest_cleanup.as_ref().unwrap().author_id, "b@x");
+    assert_eq!(i.largest_cleanup.as_ref().unwrap().deletions, 1);
 }
 
 #[test]

@@ -80,6 +80,44 @@ pub struct ActivityCell {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct Peak {
+    pub label: String,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CommitRecord {
+    pub sha: String,
+    pub author_id: String,
+    pub author_time: String,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TagDate {
+    pub name: String,
+    pub target_sha: String,
+    pub committer_time: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Insights {
+    pub longest_streak: u64,
+    pub current_streak: u64,
+    pub busiest_day: Option<Peak>,
+    pub busiest_month: Option<Peak>,
+    pub peak_hour: Option<Peak>,
+    pub burstiness: Option<f64>,
+    pub highest_growth_month: Option<Peak>,
+    pub highest_churn_month: Option<Peak>,
+    pub first_tag_days: Option<i64>,
+    pub release_interval_median_days: Option<f64>,
+    pub largest_commit: Option<CommitRecord>,
+    pub largest_cleanup: Option<CommitRecord>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct FileAnalytics {
     pub path_id: String,
     pub display_path: String,
@@ -148,6 +186,8 @@ pub struct RepositoryAnalytics {
     pub commits: Vec<CommitSummary>,
     pub activity: Vec<Activity>,
     pub activity_heatmap: Vec<ActivityCell>,
+    pub activity_by_week: Vec<ActivityCell>,
+    pub insights: Insights,
     pub files: Vec<FileAnalytics>,
     pub directories: Vec<DirectoryAnalytics>,
     pub extensions: Vec<ExtensionAnalytics>,

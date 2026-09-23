@@ -1,6 +1,7 @@
-use crate::model::{FileChange, Identity, RawCommit};
+use crate::model::{FileChange, Identity, RawCommit, TagDate};
+use chrono::DateTime;
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io::{BufRead, BufReader},
     os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
@@ -97,6 +98,59 @@ pub fn head_paths(repo: &Repository) -> Result<Vec<Vec<u8>>, String> {
         .filter(|path| !path.is_empty())
         .map(Vec::from)
         .collect())
+}
+
+pub fn reachable_tag_dates(repo: &Repository) -> Result<Vec<TagDate>, String> {
+    let names = git(
+        &repo.root,
+        &[
+            OsStr::new("tag"),
+            OsStr::new("--merged"),
+            OsStr::new("HEAD"),
+            OsStr::new("--list"),
+        ],
+    )?;
+    let mut tags = Vec::new();
+    for name in names
+        .split(|&byte| byte == b'\n')
+        .filter(|name| !name.is_empty())
+    {
+        let mut reference = b"refs/tags/".to_vec();
+        reference.extend_from_slice(name);
+        reference.extend_from_slice(b"^{commit}");
+        let reference = OsString::from_vec(reference);
+        let sha = match git(
+            &repo.root,
+            &[OsStr::new("rev-parse"), OsStr::new("--verify"), &reference],
+        ) {
+            Ok(bytes) => parse_sha(bytes.strip_suffix(b"\n").unwrap_or(&bytes))?,
+            Err(_) => continue, // A reachable tag may point at a noncommit object.
+        };
+        let bytes = git(
+            &repo.root,
+            &[
+                OsStr::new("log"),
+                OsStr::new("-1"),
+                OsStr::new("--format=%cI"),
+                &reference,
+            ],
+        )?;
+        let committer_time = String::from_utf8(bytes)
+            .map_err(|e| e.to_string())?
+            .trim_end_matches('\n')
+            .to_owned();
+        let date = DateTime::parse_from_rfc3339(&committer_time).map_err(|e| e.to_string())?;
+        tags.push((
+            date,
+            TagDate {
+                name: String::from_utf8_lossy(name).into_owned(),
+                target_sha: sha,
+                committer_time,
+            },
+        ));
+    }
+    tags.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    Ok(tags.into_iter().map(|(_, tag)| tag).collect())
 }
 
 fn token<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, String> {
