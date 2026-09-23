@@ -6,6 +6,7 @@ use git_wrapped::{
     },
     cache,
     config::Config,
+    deep::{analyze_deep_with_cancel, DeepLimits},
     git::discover,
     model::RepositoryAnalytics,
     progress::{CancelFlag, Progress},
@@ -61,6 +62,13 @@ enum ThemeArg {
 #[derive(Subcommand)]
 enum CommandArg {
     Report {
+        #[arg(long)]
+        deep: bool,
+        repository: Option<PathBuf>,
+    },
+    Ownership {
+        #[arg(long, required = true)]
+        deep: bool,
         repository: Option<PathBuf>,
     },
     Export {
@@ -172,6 +180,7 @@ enum View {
     Activity(Bucket),
     Archaeology,
     Awards,
+    Ownership,
 }
 
 fn safe(value: &str) -> String {
@@ -378,6 +387,31 @@ fn print_view(data: &RepositoryAnalytics, view: View, out: &mut impl Write) -> R
             )
             .map_err(|e| e.to_string())?;
         }
+        View::Ownership => {
+            let deep = data.deep.as_ref().ok_or("ownership requires --deep")?;
+            writeln!(
+                out,
+                "Current HEAD nonblank text lines by author (date/author filters do not apply)"
+            )
+            .map_err(|e| e.to_string())?;
+            writeln!(out, "author id\tlines\tpercent").map_err(|e| e.to_string())?;
+            for row in &deep.ownership {
+                writeln!(
+                    out,
+                    "{}\t{}\t{:.1}%",
+                    safe(&row.author_id),
+                    row.lines,
+                    row.percent
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            writeln!(out, "coverage\t{} attributed, {} unknown; {} of {} eligible files analyzed; {} binary and {} submodules skipped{}",
+                deep.coverage.attributed_lines, deep.coverage.unknown_lines,
+                deep.coverage.analyzed_files, deep.coverage.eligible_files,
+                deep.coverage.skipped_binary, deep.coverage.skipped_submodules,
+                if deep.coverage.truncated { "; truncated" } else { "" })
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -386,25 +420,39 @@ fn run(cli: Cli) -> Result<(), String> {
     let cancel = CancelFlag::default();
     cancel.install_ctrlc()?;
     let progress = Progress::new(cli.verbose);
-    let (repository, export, view) = match cli.command {
+    let (repository, export, view, deep) = match cli.command {
         None => (
             cli.repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             None,
+            false,
         ),
-        Some(CommandArg::Report { repository }) => (
+        Some(CommandArg::Report { repository, deep }) => (
             repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             None,
+            deep,
+        ),
+        Some(CommandArg::Ownership { repository, deep }) => (
+            repository.unwrap_or_else(|| PathBuf::from(".")),
+            false,
+            Some(View::Ownership),
+            deep,
         ),
         Some(CommandArg::Export {
             format: _,
             repository,
-        }) => (repository.unwrap_or_else(|| PathBuf::from(".")), true, None),
+        }) => (
+            repository.unwrap_or_else(|| PathBuf::from(".")),
+            true,
+            None,
+            false,
+        ),
         Some(CommandArg::Contributors { by, repository }) => (
             repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             Some(View::Contributors(by)),
+            false,
         ),
         Some(CommandArg::Contributor {
             id_or_name,
@@ -413,26 +461,31 @@ fn run(cli: Cli) -> Result<(), String> {
             repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             Some(View::Contributor(id_or_name)),
+            false,
         ),
         Some(CommandArg::Activity { bucket, repository }) => (
             repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             Some(View::Activity(bucket)),
+            false,
         ),
         Some(CommandArg::Archaeology { repository }) => (
             repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             Some(View::Archaeology),
+            false,
         ),
         Some(CommandArg::Awards { repository }) => (
             repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             Some(View::Awards),
+            false,
         ),
         Some(CommandArg::Top { metric, repository }) => (
             repository.unwrap_or_else(|| PathBuf::from(".")),
             false,
             Some(View::Contributors(metric.into())),
+            false,
         ),
     };
     let repo = discover(&repository)?;
@@ -461,8 +514,8 @@ fn run(cli: Cli) -> Result<(), String> {
         include_merges: !cli.no_merges,
     };
     let cache_path = cli.output.join(".git-wrapped-cache.json");
-    let key = if !export && view.is_none() && !cli.no_cache {
-        match cache::key(&repo, &config, &options, false) {
+    let key = if !export && (view.is_none() || deep) && !cli.no_cache {
+        match cache::key(&repo, &config, &options, deep) {
             Ok(key) => Some(key),
             Err(error) => {
                 eprintln!("Warning: could not key analysis cache: {}", safe(&error));
@@ -474,15 +527,20 @@ fn run(cli: Cli) -> Result<(), String> {
     };
     let cached = key
         .as_ref()
-        .and_then(|expected| cache::load(&cache_path, expected).ok().flatten());
+        .and_then(|expected| cache::load(&cache_path, expected).ok().flatten())
+        .filter(|data| !deep || data.deep.is_some());
     let cache_hit = cached.is_some();
-    let data = if let Some(data) = cached {
+    let mut data = if let Some(data) = cached {
         eprintln!("Using cached analysis");
         data
     } else {
         progress.phase("Scanning Git history", None, None);
         analyze_with_options_and_cancel(&repo, &config, &options, &cancel)?
     };
+    if deep && !cache_hit {
+        progress.phase("Measuring current ownership", None, None);
+        analyze_deep_with_cancel(&repo, &config, &mut data, DeepLimits::default(), &cancel)?;
+    }
     cancel.check()?;
     if repo.shallow {
         eprintln!("Warning: shallow repository; historical totals cover available history only.");
@@ -497,6 +555,11 @@ fn run(cli: Cli) -> Result<(), String> {
     } else if let Some(view) = view {
         let stdout = io::stdout();
         print_view(&data, view, &mut stdout.lock())?;
+        if let Some(key) = key.as_ref().filter(|_| !cache_hit) {
+            if let Err(error) = cache::save(&cache_path, key, &data) {
+                eprintln!("Warning: could not save analysis cache: {}", safe(&error));
+            }
+        }
     } else {
         progress.phase("Writing report", None, None);
         let theme = match cli.theme {

@@ -189,6 +189,94 @@ pub struct Award {
     pub explanation: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OwnershipSlice {
+    pub author_id: String,
+    pub lines: u64,
+    pub percent: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OwnershipGroup {
+    pub group: String,
+    pub lines: u64,
+    pub by_author: Vec<OwnershipSlice>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct YearCohort {
+    pub year: i32,
+    pub surviving_lines: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CodeAge {
+    pub median_days: Option<i64>,
+    pub oldest_days: Option<i64>,
+    pub future_dated_lines: u64,
+    pub year_cohorts: Vec<YearCohort>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DeepCoverage {
+    pub eligible_files: u64,
+    pub analyzed_files: u64,
+    pub skipped_binary: u64,
+    pub skipped_submodules: u64,
+    pub attributed_lines: u64,
+    pub unknown_lines: u64,
+    pub truncated: bool,
+    pub interaction_commits_examined: u64,
+    pub interaction_commits_skipped: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SurvivalPoint {
+    pub snapshot_sha: String,
+    pub snapshot_date: String,
+    pub original_lines: u64,
+    pub surviving_lines: u64,
+    pub percent: f64,
+    pub sampled_files: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OwnershipSnapshot {
+    pub sha: String,
+    pub author_date: String,
+    pub total_lines: u64,
+    pub by_author: Vec<OwnershipSlice>,
+    pub coverage: DeepCoverage,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Interaction {
+    pub deleting_author_id: String,
+    pub original_author_id: String,
+    pub deleted_lines: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FilePair {
+    pub first_path_id: String,
+    pub second_path_id: String,
+    pub cochange_commits: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DeepAnalytics {
+    pub surviving_loc: u64,
+    pub ownership: Vec<OwnershipSlice>,
+    pub ownership_by_directory: Vec<OwnershipGroup>,
+    pub ownership_by_extension: Vec<OwnershipGroup>,
+    pub code_age: CodeAge,
+    pub coverage: DeepCoverage,
+    pub survival: Vec<SurvivalPoint>,
+    pub historical_ownership: Vec<OwnershipSnapshot>,
+    pub interactions: Vec<Interaction>,
+    pub coupling: Vec<FilePair>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepositoryMetadata {
     pub name: String,
@@ -261,6 +349,8 @@ pub struct RepositoryAnalytics {
     pub directories: Vec<DirectoryAnalytics>,
     pub extensions: Vec<ExtensionAnalytics>,
     pub awards: Vec<Award>,
+    #[serde(default)]
+    pub deep: Option<DeepAnalytics>,
 }
 
 #[cfg(test)]

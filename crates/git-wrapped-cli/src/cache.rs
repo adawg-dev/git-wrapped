@@ -38,15 +38,21 @@ struct CacheWrite<'a> {
     data: &'a RepositoryAnalytics,
 }
 
-fn checked_parent(path: &Path) -> Result<(), String> {
+fn checked_parent(path: &Path, create: bool) -> Result<(), String> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        checked_parent(parent)?;
+        checked_parent(parent, create)?;
     }
-    let meta =
-        fs::symlink_metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?;
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if create && error.kind() == ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(|e| format!("create {}: {e}", path.display()))?;
+            fs::symlink_metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?
+        }
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    };
     if meta.file_type().is_symlink() {
         return Err(format!(
             "refusing symlink cache directory: {}",
@@ -62,8 +68,8 @@ fn checked_parent(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_target(path: &Path) -> Result<(), String> {
-    checked_parent(path.parent().ok_or("cache path has no parent")?)?;
+fn checked_target(path: &Path, create: bool) -> Result<(), String> {
+    checked_parent(path.parent().ok_or("cache path has no parent")?, create)?;
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             Err(format!("refusing symlink cache: {}", path.display()))
@@ -78,7 +84,7 @@ fn checked_target(path: &Path) -> Result<(), String> {
 }
 
 pub fn load(path: &Path, expected_key: &CacheKey) -> Result<Option<RepositoryAnalytics>, String> {
-    if expected_key.schema_version != SCHEMA_VERSION || checked_target(path).is_err() {
+    if expected_key.schema_version != SCHEMA_VERSION || checked_target(path, false).is_err() {
         return Ok(None);
     }
     let meta = match fs::symlink_metadata(path) {
@@ -108,7 +114,7 @@ pub fn save(path: &Path, key: &CacheKey, data: &RepositoryAnalytics) -> Result<(
     if key.schema_version != SCHEMA_VERSION {
         return Err("unsupported cache schema".into());
     }
-    checked_target(path)?;
+    checked_target(path, true)?;
     let bytes = serde_json::to_vec(&CacheWrite { key, data })
         .map_err(|e| format!("serialize cache: {e}"))?;
     if bytes.len() as u64 > MAX_BYTES {
@@ -130,7 +136,7 @@ pub fn save(path: &Path, key: &CacheKey, data: &RepositoryAnalytics) -> Result<(
             .map_err(|e| format!("write {}: {e}", temporary.display()))?;
         file.sync_all()
             .map_err(|e| format!("sync {}: {e}", temporary.display()))?;
-        checked_target(path)?;
+        checked_target(path, false)?;
         fs::rename(&temporary, path).map_err(|e| format!("rename {}: {e}", temporary.display()))
     })();
     if result.is_err() {

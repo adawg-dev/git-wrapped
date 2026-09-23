@@ -1,7 +1,7 @@
 use crate::{
     awards::select_awards,
     config::{normalize, Config},
-    git::{head_paths, reachable_tag_dates, scan_with_cancel, tree_file_count, Repository},
+    git::{head_paths, reachable_tag_dates, scan_with_cancel, tree_paths, Repository},
     model::{
         Activity, ActivityCell, CommitRecord, CommitSummary, ContributorAnalytics,
         DirectoryAnalytics, ExtensionAnalytics, FileAnalytics, Insights, Overlap, Peak,
@@ -183,12 +183,33 @@ fn median_commit_size(sizes: &mut [u64]) -> f64 {
 pub fn sample_trees(
     repo: &Repository,
     commits: &[CommitSummary],
+    timezone: TimezoneChoice,
+    excluded_patterns: &[String],
+    cancel: &CancelFlag,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Vec<TreeSample>, String> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in excluded_patterns {
+        builder.add(
+            Glob::new(pattern).map_err(|e| format!("invalid exclude pattern {pattern:?}: {e}"))?,
+        );
+    }
+    let excluded = builder
+        .build()
+        .map_err(|e| format!("invalid exclude patterns: {e}"))?;
     let mut chronological: Vec<_> = commits
         .iter()
         .map(|commit| {
             DateTime::parse_from_rfc3339(&commit.author_time)
-                .map(|time| (time, commit))
+                .map(|time| {
+                    let selected = match timezone {
+                        TimezoneChoice::Commit => time,
+                        TimezoneChoice::Utc => time.with_timezone(&chrono::Utc).fixed_offset(),
+                        TimezoneChoice::Local => time.with_timezone(&chrono::Local).fixed_offset(),
+                        TimezoneChoice::Named(zone) => time.with_timezone(&zone).fixed_offset(),
+                    };
+                    (selected, commit)
+                })
                 .map_err(|e| e.to_string())
         })
         .collect::<Result<_, _>>()?;
@@ -196,6 +217,10 @@ pub fn sample_trees(
     let count = chronological.len().min(24);
     let mut samples = Vec::with_capacity(count);
     for index in 0..count {
+        cancel.check()?;
+        if deadline.is_some_and(|time| std::time::Instant::now() >= time) {
+            break;
+        }
         let position = if count == 1 {
             0
         } else {
@@ -205,7 +230,10 @@ pub fn sample_trees(
         samples.push(TreeSample {
             sha: commit.sha.clone(),
             author_date: time.date_naive().to_string(),
-            tracked_files: tree_file_count(repo, &commit.sha)?,
+            tracked_files: tree_paths(repo, &commit.sha)?
+                .iter()
+                .filter(|path| !excluded.is_match(String::from_utf8_lossy(path).as_ref()))
+                .count(),
         });
     }
     Ok(samples)
@@ -967,6 +995,7 @@ pub fn analyze_with_options_and_cancel(
         directories,
         extensions: extensions.into_values().collect(),
         awards: Vec::new(),
+        deep: None,
     };
     result.activity_by_week = activity_by_week(&result)?;
     let selected_shas: HashSet<_> = result

@@ -11,6 +11,223 @@ use git_wrapped::progress::CancelFlag;
 use std::{fs, process::Command};
 
 #[test]
+fn current_ownership_counts_head_lines_and_normalizes_mailmap_aliases() {
+    let f = Fixture::new();
+    f.commit("a.txt", b"one\ntwo\n", "old@x", "2024-01-01T10:00:00 +0000");
+    f.commit("a.txt", b"one\nthree\n", "b@x", "2024-01-02T10:00:00 +0000");
+    fs::write(
+        f.dir.path().join(".mailmap"),
+        "Canonical <canon@x> <old@x>\n",
+    )
+    .unwrap();
+    f.commit("empty.txt", b"", "b@x", "2024-01-03T10:00:00 +0000");
+    f.commit("binary.bin", b"x\0y", "b@x", "2024-01-04T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"exclude":[".mailmap"],"contributors":{"Canonical":["canon@x","alias@x"]}}"#,
+    )
+    .unwrap();
+    let config = Config::load(&repo.root).unwrap();
+    let mut data = analyze(&repo, &config).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &config, &mut data, Default::default()).unwrap();
+    let deep = data.deep.unwrap();
+    assert_eq!(deep.surviving_loc, 2);
+    assert_eq!(deep.coverage.attributed_lines, 2);
+    assert_eq!(deep.coverage.skipped_binary, 1);
+    assert_eq!(deep.coverage.unknown_lines, 0);
+    assert_eq!(deep.ownership.iter().map(|x| x.lines).sum::<u64>(), 2);
+    assert!(deep
+        .ownership
+        .iter()
+        .any(|x| x.author_id == "alias@x" && x.lines == 1));
+    assert!(deep
+        .ownership
+        .iter()
+        .any(|x| x.author_id == "b@x" && x.lines == 1));
+}
+
+#[test]
+fn deep_limits_report_partial_coverage_and_tree_selection() {
+    let f = Fixture::new();
+    f.commit("keep/a", b"a\n", "a@x", "2024-01-01T23:30:00 -0800");
+    f.commit("skip/b", b"b\n", "a@x", "2024-01-02T10:00:00 +0000");
+    f.commit("keep/c", b"c\n", "a@x", "2024-01-03T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let options = AnalysisOptions {
+        timezone: TimezoneChoice::Utc,
+        exclusions: vec!["skip/**".into()],
+        ..Default::default()
+    };
+    let mut data = analyze_with_options(&repo, &Config::default(), &options).unwrap();
+    assert!(data.tree_samples.is_empty());
+    git_wrapped::deep::analyze_deep_with_cancel(
+        &repo,
+        &Config::default(),
+        &mut data,
+        git_wrapped::deep::DeepLimits {
+            max_files: 1,
+            ..Default::default()
+        },
+        &CancelFlag::default(),
+    )
+    .unwrap();
+    assert_eq!(data.tree_samples.len(), 3);
+    assert_eq!(data.tree_samples[0].author_date, "2024-01-02");
+    assert_eq!(data.tree_samples[0].tracked_files, 1);
+    assert_eq!(data.tree_samples[1].tracked_files, 1);
+    assert_eq!(data.tree_samples[2].tracked_files, 2);
+    let deep = data.deep.unwrap();
+    assert_eq!(deep.coverage.eligible_files, 2);
+    assert_eq!(deep.coverage.analyzed_files, 1);
+    assert!(deep.coverage.truncated);
+}
+
+#[test]
+fn deep_head_ownership_ignores_history_date_and_author_selectors() {
+    let f = Fixture::new();
+    f.commit("first", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("second", b"two\n", "b@x", "2024-01-02T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let options = AnalysisOptions {
+        since: Some("2024-01-02".parse().unwrap()),
+        author_ids: vec!["b@x".into()],
+        ..Default::default()
+    };
+    let mut data = analyze_with_options(&repo, &Config::default(), &options).unwrap();
+    assert_eq!(data.commits.len(), 1);
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    assert_eq!(data.tree_samples.len(), 1);
+    assert_eq!(data.tree_samples[0].tracked_files, 2);
+    let ownership = &data.deep.unwrap().ownership;
+    assert!(ownership
+        .iter()
+        .any(|x| x.author_id == "a@x" && x.lines == 1));
+    assert!(ownership
+        .iter()
+        .any(|x| x.author_id == "b@x" && x.lines == 1));
+}
+
+#[test]
+fn cancelled_deep_pass_publishes_no_partial_data() {
+    let f = Fixture::new();
+    f.commit("first", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    let cancel = CancelFlag::default();
+    cancel.cancel();
+    assert_eq!(
+        git_wrapped::deep::analyze_deep_with_cancel(
+            &repo,
+            &Config::default(),
+            &mut data,
+            Default::default(),
+            &cancel
+        )
+        .unwrap_err(),
+        "cancelled"
+    );
+    assert!(data.deep.is_none());
+    assert!(data.tree_samples.is_empty());
+}
+
+#[test]
+fn deep_coverage_skips_gitlinks_and_stops_at_line_budget() {
+    let f = Fixture::new();
+    f.commit("text", b"one\ntwo\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let sha = String::from_utf8(f.git(&["rev-parse", "HEAD"]).stdout).unwrap();
+    assert!(f
+        .git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{},module", sha.trim())
+        ])
+        .status
+        .success());
+    assert!(f.git(&["commit", "-qm", "gitlink"]).status.success());
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(
+        &repo,
+        &Config::default(),
+        &mut data,
+        git_wrapped::deep::DeepLimits {
+            max_lines: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let coverage = &data.deep.unwrap().coverage;
+    assert_eq!(coverage.skipped_submodules, 1);
+    assert_eq!(coverage.attributed_lines, 1);
+    assert!(coverage.truncated);
+}
+
+#[test]
+fn deep_cli_uses_distinct_cache_and_ownership_view() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let out = tempdir();
+    let output = out.path().join("nested");
+    let args: &[&std::ffi::OsStr] = &[
+        "--output".as_ref(),
+        output.as_os_str(),
+        "ownership".as_ref(),
+        "--deep".as_ref(),
+    ];
+    let first = cli(args, f.dir.path());
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains("a@x\t1"));
+    assert!(output.join(".git-wrapped-cache.json").exists());
+    let second = cli(args, f.dir.path());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("Using cached analysis"));
+    let shallow = cli(
+        &[
+            "--output".as_ref(),
+            output.as_os_str(),
+            "--no-png".as_ref(),
+            "report".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(
+        shallow.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shallow.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&shallow.stderr).contains("Using cached analysis"));
+    let shallow_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("data.json")).unwrap()).unwrap();
+    assert!(shallow_json["deep"].is_null());
+    assert!(shallow_json["tree_samples"].as_array().unwrap().is_empty());
+    let deep = cli(
+        &[
+            "--output".as_ref(),
+            output.as_os_str(),
+            "--no-png".as_ref(),
+            "report".as_ref(),
+            "--deep".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(
+        deep.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deep.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&deep.stderr).contains("Using cached analysis"));
+    let json: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("data.json")).unwrap()).unwrap();
+    assert_eq!(json["deep"]["coverage"]["attributed_lines"], 1);
+}
+
+#[test]
 fn exclusions_keep_commits_and_filter_history_and_head_paths() {
     let f = Fixture::new();
     f.commit("Cargo.lock", b"lock\n", "a@x", "2024-01-01T10:00:00 +0000");
@@ -901,11 +1118,18 @@ fn contributor_tenure_overlap_words_and_trees_use_selected_history() {
         .all(|w| !w.word.chars().any(char::is_control)));
     assert!(x.tree_samples.is_empty());
     assert_eq!(
-        sample_trees(&discover(f.dir.path()).unwrap(), &x.commits)
-            .unwrap()
-            .iter()
-            .map(|s| s.tracked_files)
-            .collect::<Vec<_>>(),
+        sample_trees(
+            &discover(f.dir.path()).unwrap(),
+            &x.commits,
+            TimezoneChoice::Commit,
+            &[],
+            &CancelFlag::default(),
+            None
+        )
+        .unwrap()
+        .iter()
+        .map(|s| s.tracked_files)
+        .collect::<Vec<_>>(),
         vec![1, 2, 3, 4]
     );
 }
@@ -923,7 +1147,15 @@ fn deep_tree_samples_include_endpoints_and_stop_at_twenty_four() {
     }
     let repo = discover(f.dir.path()).unwrap();
     let x = analyze(&repo, &Config::default()).unwrap();
-    let samples = sample_trees(&repo, &x.commits).unwrap();
+    let samples = sample_trees(
+        &repo,
+        &x.commits,
+        TimezoneChoice::Commit,
+        &[],
+        &CancelFlag::default(),
+        None,
+    )
+    .unwrap();
     assert!(x.tree_samples.is_empty());
     assert_eq!(samples.len(), 24);
     assert_eq!(samples.first().unwrap().author_date, "2024-01-01");

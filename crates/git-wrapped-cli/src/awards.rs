@@ -250,6 +250,7 @@ mod tests {
             directories: vec![],
             extensions: vec![],
             awards: vec![],
+            deep: None,
         }
     }
 

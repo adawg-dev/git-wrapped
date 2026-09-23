@@ -90,24 +90,10 @@ pub fn discover(path: &Path) -> Result<Repository, String> {
 }
 
 pub fn head_paths(repo: &Repository) -> Result<Vec<Vec<u8>>, String> {
-    let bytes = git(
-        &repo.root,
-        &[
-            OsStr::new("ls-tree"),
-            OsStr::new("-r"),
-            OsStr::new("-z"),
-            OsStr::new("--name-only"),
-            OsStr::new("HEAD"),
-        ],
-    )?;
-    Ok(bytes
-        .split(|&byte| byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(Vec::from)
-        .collect())
+    tree_paths(repo, "HEAD")
 }
 
-pub(crate) fn tree_file_count(repo: &Repository, sha: &str) -> Result<usize, String> {
+pub(crate) fn tree_paths(repo: &Repository, sha: &str) -> Result<Vec<Vec<u8>>, String> {
     let bytes = git(
         &repo.root,
         &[
@@ -118,7 +104,11 @@ pub(crate) fn tree_file_count(repo: &Repository, sha: &str) -> Result<usize, Str
             OsStr::new(sha),
         ],
     )?;
-    Ok(bytes.iter().filter(|&&byte| byte == 0).count())
+    Ok(bytes
+        .split(|&byte| byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(Vec::from)
+        .collect())
 }
 
 pub fn reachable_tag_dates(repo: &Repository) -> Result<Vec<TagDate>, String> {
