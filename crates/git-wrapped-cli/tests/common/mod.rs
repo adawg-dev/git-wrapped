@@ -7,9 +7,14 @@ pub struct Fixture {
     pub dir: tempfile::TempDir,
 }
 
+pub fn tempdir() -> tempfile::TempDir {
+    let root = fs::canonicalize(std::env::temp_dir()).unwrap();
+    tempfile::Builder::new().tempdir_in(root).unwrap()
+}
+
 impl Fixture {
     pub fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let f = Self { dir };
         assert!(f.git(&["init", "-q", "-b", "master"]).status.success());
         assert!(f.git(&["config", "user.name", "Test"]).status.success());

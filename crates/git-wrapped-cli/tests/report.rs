@@ -1,5 +1,5 @@
 mod common;
-use common::Fixture;
+use common::{tempdir, Fixture};
 use git_wrapped::analysis::{activity_by_day, activity_by_month, analyze, sample_trees};
 use git_wrapped::awards::select_awards;
 use git_wrapped::config::{normalize, Config};
@@ -513,7 +513,7 @@ fn explicit_repo_creates_first_report() {
         "a@example.com",
         "2024-01-01T12:00:00 +0000",
     );
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     let output = out.path().join("report with spaces");
     let result = cli(
         &[
@@ -581,7 +581,7 @@ fn default_and_report_commands_use_invocation_directory() {
 
 #[test]
 fn invalid_argument_does_not_print_terminal_controls() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = tempdir();
     let bad_theme = "bad\r\n\u{85}\x1b[31m";
     let result = cli(&["--theme".as_ref(), bad_theme.as_ref()], cwd.path());
     assert_eq!(result.status.code(), Some(2));
@@ -623,7 +623,7 @@ fn export_is_valid_json_only() {
 #[test]
 fn cli_errors_leave_output_intact() {
     let f = Fixture::new();
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     let output = out.path().join("report");
     fs::create_dir(&output).unwrap();
     fs::write(output.join("sentinel"), b"keep").unwrap();
@@ -666,7 +666,7 @@ fn terminal_output_sanitizes_control_characters_and_warns_for_shallow_history() 
     let output = cli(&["export".as_ref(), f.dir.path().as_os_str()], f.dir.path());
     assert!(output.status.success());
     assert!(!output.stderr.contains(&0x1b));
-    let shallow = tempfile::tempdir().unwrap();
+    let shallow = tempdir();
     let clone = shallow.path().join("clone");
     let cloned = Command::new("git")
         .args([
@@ -1124,7 +1124,7 @@ fn scans_root_empty_rename_binary_and_unusual_paths() {
 fn linked_worktree_is_discovered() {
     let f = Fixture::new();
     f.commit("a", b"a\n", "a@x", "2024-01-01T10:00:00 +0000");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let path = dir.path().join("linked");
     let status = std::process::Command::new("git")
         .arg("-C")
@@ -1172,7 +1172,7 @@ fn shallow_clone_reports_available_history() {
     let f = Fixture::new();
     f.commit("one", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
     f.commit("two", b"two\n", "a@x", "2024-01-02T10:00:00 +0000");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let path = dir.path().join("clone");
     let status = std::process::Command::new("git")
         .args(["clone", "-q", "--depth=1"])
@@ -1228,8 +1228,8 @@ fn render_report_is_safe_complete_and_deterministic() {
     data.repository.name = "<script>&\"".into();
     data.contributors[0].name = "Line\nBreak\u{85}".into();
     data.commits[0].subject = "subject\t\u{1e}".into();
-    let out = tempfile::tempdir().unwrap();
-    let other = tempfile::tempdir().unwrap();
+    let out = tempdir();
+    let other = tempdir();
     render_report(&data, out.path(), Theme::Dark).unwrap();
     render_report(&data, other.path(), Theme::Dark).unwrap();
     for file in [
@@ -1280,7 +1280,7 @@ fn render_report_is_safe_complete_and_deterministic() {
     {
         let protected = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(protected.path(), "untouched").unwrap();
-        let linked = tempfile::tempdir().unwrap();
+        let linked = tempdir();
         std::os::unix::fs::symlink(protected.path(), linked.path().join("summary.svg")).unwrap();
         assert!(render_report(&data, linked.path(), Theme::Dark).is_err());
         assert_eq!(
@@ -1315,7 +1315,7 @@ fn render_heatmap_keeps_multidecade_history_readable() {
             commits: 1,
         })
         .collect();
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     render_report(&data, out.path(), Theme::Dark).unwrap();
     let svg = std::fs::read_to_string(out.path().join("activity-heatmap.svg")).unwrap();
     assert!(svg.contains("Trailing 365 days · 2024-01-02 — 2024-12-31"));
@@ -1392,7 +1392,7 @@ fn export_never_runs_repository_signature_program() {
 fn default_report_rejects_symlink_root_before_writes() {
     let f = Fixture::new();
     f.commit("a", b"a\n", "a@x", "2024-01-01T12:00:00 +0000");
-    let external = tempfile::tempdir().unwrap();
+    let external = tempdir();
     fs::write(external.path().join("summary.svg"), "untouched").unwrap();
     std::os::unix::fs::symlink(external.path(), f.dir.path().join("git-wrapped-report")).unwrap();
     let result = cli(&[], f.dir.path());
@@ -1417,7 +1417,7 @@ fn poster_contains_rich_sections_and_escapes_long_names() {
     let mut data = cross_offset_data();
     data.repository.name = "<script>&report".into();
     data.contributors[0].name = format!("{}<script>", "A".repeat(80));
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
@@ -1434,8 +1434,8 @@ fn poster_contains_rich_sections_and_escapes_long_names() {
 #[test]
 fn report_rejects_symlinked_awards_directory_and_json_target() {
     let data = cross_offset_data();
-    let out = tempfile::tempdir().unwrap();
-    let external = tempfile::tempdir().unwrap();
+    let out = tempdir();
+    let external = tempdir();
     std::os::unix::fs::symlink(external.path(), out.path().join("awards")).unwrap();
     assert!(git_wrapped::render::render_report(
         &data,
@@ -1471,7 +1471,7 @@ fn cross_offset_age_counts_elapsed_full_days() {
 #[test]
 fn cross_offset_heatmap_includes_latest_activity_date() {
     let data = cross_offset_data();
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("activity-heatmap.svg")).unwrap();
@@ -1482,7 +1482,7 @@ fn cross_offset_heatmap_includes_latest_activity_date() {
 #[test]
 fn activity_maximum_bar_reaches_axis_maximum() {
     let data = cross_offset_data();
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("activity.svg")).unwrap();
@@ -1493,7 +1493,7 @@ fn activity_maximum_bar_reaches_axis_maximum() {
 #[test]
 fn summary_growth_band_labels_calendar_gaps() {
     let mut data = cross_offset_data();
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
@@ -1520,7 +1520,7 @@ fn summary_explains_months_without_line_changes() {
         month.additions = 0;
         month.deletions = 0;
     }
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
@@ -1542,7 +1542,7 @@ fn summary_labels_each_visible_contributor_share() {
     for (i, contributor) in data.contributors.iter_mut().enumerate() {
         contributor.name = format!("Contributor {i}");
     }
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
@@ -1554,8 +1554,30 @@ fn summary_labels_each_visible_contributor_share() {
 #[test]
 fn report_creates_nested_output_directory() {
     let data = cross_offset_data();
-    let out = tempfile::tempdir().unwrap();
+    let out = tempdir();
     let nested = out.path().join("new").join("report");
     git_wrapped::render::render_report(&data, &nested, git_wrapped::render::Theme::Dark).unwrap();
     assert!(nested.join("summary.svg").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn report_rejects_existing_directory_below_symlink_ancestor() {
+    let data = cross_offset_data();
+    let base = tempdir();
+    let external = tempdir();
+    fs::create_dir(external.path().join("report")).unwrap();
+    std::os::unix::fs::symlink(external.path(), base.path().join("link")).unwrap();
+
+    let output = base.path().join("link/report");
+    let error =
+        git_wrapped::render::render_report(&data, &output, git_wrapped::render::Theme::Dark)
+            .unwrap_err();
+    assert!(error.contains("symlink"), "{error}");
+    assert_eq!(
+        fs::read_dir(external.path().join("report"))
+            .unwrap()
+            .count(),
+        0
+    );
 }

@@ -108,6 +108,12 @@ fn monthly_counts(data: &RepositoryAnalytics) -> Vec<(String, u64)> {
 }
 
 fn checked_directory(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty() && *p != path)
+    {
+        checked_directory(parent)?;
+    }
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(format!(
             "refusing symlink output directory: {}",
@@ -116,9 +122,6 @@ fn checked_directory(path: &Path) -> Result<(), String> {
         Ok(meta) if !meta.is_dir() => Err(format!("output is not a directory: {}", path.display())),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                checked_directory(parent)?;
-            }
             fs::create_dir(path).map_err(|e| format!("create {}: {e}", path.display()))
         }
         Err(error) => Err(format!("inspect {}: {error}", path.display())),
