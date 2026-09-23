@@ -26,9 +26,15 @@ The installed binary also accepts an explicit path:
 git-wrapped [PATH] [--output DIR] [--theme dark|light]
 git-wrapped report [PATH] [--output DIR] [--theme dark|light]
 git-wrapped export --format json [PATH]
+git-wrapped contributors [--by commits|additions|deletions|churn|net|files|active-days] [PATH]
+git-wrapped contributor <ID-OR-NAME> [PATH]
+git-wrapped activity [--bucket day|week|month|quarter|year] [PATH]
+git-wrapped archaeology [PATH]
+git-wrapped awards [PATH]
+git-wrapped top commits|additions|deletions|churn|files [PATH]
 ```
 
-`PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Export writes JSON to stdout; report commands write files and print a short summary. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
+`PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Export writes JSON to stdout; report commands write files and print a short summary. Focused commands print text, with up to 20 rows per list. `contributors` defaults to commits; `top` is a shortcut for its five named rankings, including `top files` for contributors by distinct files touched. `contributor` accepts an exact ID or a unique case-insensitive display name. `activity` defaults to month and shows the latest 20 periods. `archaeology` ranks changed paths by historical churn and marks paths absent from HEAD as historical. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
 
 ## Report files
 
@@ -52,9 +58,12 @@ The four award cards are always present; an ineligible award displays “No elig
 
 - **Commits:** HEAD-reachable commits, including root, empty, and merge commits. The date range uses author dates.
 - **Lifetime additions/deletions:** Lines added and removed in Git numstat history. Binary changes count as touched files but add zero lines. Merge commits count as commits but contribute no line or file changes, avoiding duplicate merge diffs. Root commit additions count.
-- **Net historical lines:** Lifetime additions minus lifetime deletions. **Churn:** their sum. Neither measures current code ownership or surviving lines.
+- **Net historical lines:** Lifetime additions minus lifetime deletions. **Historical churn:** their sum across selected changes. File churn is attributed to the changed path, including the new path of a rename; directory churn is attributed to that path's immediate parent. These totals do not measure current code size, surviving lines, ownership, or code quality.
 - **Files touched:** Distinct paths changed by a contributor; a rename counts under its new path. **Tracked files:** Files in the current HEAD tree.
-- **Activity:** Author date and hour in each commit's recorded author offset. A contributor's active days and time-of-day awards use those local dates and hours, with no conversion to your machine's timezone.
+- **Activity:** Author date and hour in each commit's recorded author offset. Active days count distinct author dates. Day, week, and month views include zero periods between first and last activity; quarter and year group months. The selected bucket is capped at 20,000 periods, with a prompt to choose a coarser period if exceeded. Streaks end at the latest selected activity date, not today.
+- **Contributor tenure and overlap:** Tenure spans first to last selected author date; a return means a selected commit after at least 90 days without one. Overlap counts calendar weeks when both contributors committed, among the top 20 by commits. It does not establish direct collaboration, review, employment, or team membership.
+- **Commit concentration proxy:** JSON's `bus_factor_proxy` is the smallest number of normalized contributors whose commits cover at least half the selected commits. It describes commit concentration, not the actual bus factor or project resilience.
+- **Growth and release timing:** Monthly net growth is additions minus deletions, not current lines of code. Churn is additions plus deletions. Release intervals use reachable tags on distinct target commits and are descriptive; tags do not add commits.
 
 Git's `.mailmap` is applied before aliases from `.git-wrapped.json`. The config currently accepts only contributor aliases:
 
@@ -74,4 +83,4 @@ Shallow clones still work, but a warning says historical totals cover **availabl
 
 ## Scope
 
-The current release produces SVG and JSON. Ownership, surviving LOC, PNG, caching, a terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.
+The current release produces SVG, JSON, and focused terminal views. Ownership, surviving LOC, PNG, caching, a terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.

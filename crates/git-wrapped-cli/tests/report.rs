@@ -15,6 +15,112 @@ fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output
 }
 
 #[test]
+fn focused_views_sort_and_sanitize() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "b@x", "2024-01-01T10:00:00 +0000");
+    f.commit("b", b"one\n", "a@x", "2024-01-02T10:00:00 +0000");
+    f.commit("c", b"one\n", "a@x", "2024-01-03T10:00:00 +0000");
+    let output = cli(
+        &["contributors".as_ref(), "--by".as_ref(), "commits".as_ref()],
+        f.dir.path(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("commits"));
+    assert!(text.find("a@x").unwrap() < text.find("b@x").unwrap());
+    assert!(!text.contains('\x1b'));
+
+    f.commit("d", b"one\n", "b@x", "2024-01-04T10:00:00 +0000");
+    assert!(f
+        .git(&[
+            "commit",
+            "--amend",
+            "--author",
+            "Bad\x1b[31m <b@x>",
+            "--no-edit"
+        ])
+        .status
+        .success());
+    let output = cli(&["top".as_ref(), "files".as_ref()], f.dir.path());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout.clone()).unwrap();
+    assert!(text.contains("files") && text.contains("b@x"), "{text}");
+    assert!(text.contains("Bad [31m"), "{text}");
+    assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn contributor_lookup_reports_ambiguous_and_missing_names() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("b", b"one\n", "b@x", "2024-01-02T10:00:00 +0000");
+    let ambiguous = cli(&["contributor".as_ref(), "tEsT".as_ref()], f.dir.path());
+    assert!(!ambiguous.status.success());
+    let error = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(error.contains("ambiguous"), "{error}");
+    assert!(error.contains("a@x") && error.contains("b@x"), "{error}");
+    let missing = cli(&["contributor".as_ref(), "Nobody".as_ref()], f.dir.path());
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("not found"));
+    let exact = cli(&["contributor".as_ref(), "a@x".as_ref()], f.dir.path());
+    assert!(
+        exact.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exact.stderr)
+    );
+    assert!(String::from_utf8_lossy(&exact.stdout).contains("a@x"));
+}
+
+#[test]
+fn activity_buckets_fill_sparse_periods_and_reject_invalid_name() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("b", b"one\n", "a@x", "2024-07-01T10:00:00 +0000");
+    let quarter = cli(
+        &["activity".as_ref(), "--bucket".as_ref(), "quarter".as_ref()],
+        f.dir.path(),
+    );
+    assert!(
+        quarter.status.success(),
+        "{}",
+        String::from_utf8_lossy(&quarter.stderr)
+    );
+    let text = String::from_utf8(quarter.stdout).unwrap();
+    assert!(text.contains("2024-Q1\t1"), "{text}");
+    assert!(text.contains("2024-Q2\t0"), "{text}");
+    assert!(text.contains("2024-Q3\t1"), "{text}");
+    let invalid = cli(
+        &["activity".as_ref(), "--bucket".as_ref(), "decade".as_ref()],
+        f.dir.path(),
+    );
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid value"));
+}
+
+#[test]
+fn archaeology_lists_binary_only_path_with_zero_churn() {
+    let f = Fixture::new();
+    f.commit("image.bin", b"\0\x01", "a@x", "2024-01-01T10:00:00 +0000");
+    let output = cli(&["archaeology".as_ref()], f.dir.path());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("image.bin"), "{text}");
+    assert!(text.contains("\t0\t"), "{text}");
+}
+
+#[test]
 fn contributor_tenure_overlap_words_and_trees_use_selected_history() {
     let f = Fixture::new();
     f.commit("a", b"a\n", "a@x", "2024-01-01T10:00:00 +0000");
