@@ -176,6 +176,204 @@ fn cli(args: &[&std::ffi::OsStr], cwd: &std::path::Path) -> std::process::Output
 }
 
 #[test]
+fn report_cache_hits_only_for_the_same_analysis_key() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let out = tempdir();
+    let args: &[&std::ffi::OsStr] = &[
+        "--no-png".as_ref(),
+        "--output".as_ref(),
+        out.path().as_os_str(),
+        "report".as_ref(),
+    ];
+    let run = || cli(args, f.dir.path());
+    let first = run();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&first.stderr).contains("Using cached analysis"));
+    assert!(out.path().join(".git-wrapped-cache.json").is_file());
+    let second = run();
+    assert!(second.status.success());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("Using cached analysis"));
+    assert!(!String::from_utf8_lossy(&second.stdout).contains("Using cached analysis"));
+
+    let no_cache = cli(
+        &[
+            "--no-cache".as_ref(),
+            "--no-png".as_ref(),
+            "--output".as_ref(),
+            out.path().as_os_str(),
+            "report".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(no_cache.status.success());
+    assert!(!String::from_utf8_lossy(&no_cache.stderr).contains("Using cached analysis"));
+
+    let zone = cli(
+        &[
+            "--timezone".as_ref(),
+            "utc".as_ref(),
+            "--no-png".as_ref(),
+            "--output".as_ref(),
+            out.path().as_os_str(),
+            "report".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(zone.status.success());
+    assert!(!String::from_utf8_lossy(&zone.stderr).contains("Using cached analysis"));
+    let author = cli(
+        &[
+            "--author".as_ref(),
+            "a@x".as_ref(),
+            "--no-png".as_ref(),
+            "--output".as_ref(),
+            out.path().as_os_str(),
+            "report".as_ref(),
+        ],
+        f.dir.path(),
+    );
+    assert!(author.status.success());
+    assert!(!String::from_utf8_lossy(&author.stderr).contains("Using cached analysis"));
+    fs::write(
+        f.dir.path().join(".git-wrapped.json"),
+        r#"{"timezone":"utc"}"#,
+    )
+    .unwrap();
+    let changed_config = run();
+    assert!(changed_config.status.success());
+    assert!(!String::from_utf8_lossy(&changed_config.stderr).contains("Using cached analysis"));
+    f.commit("b", b"two\n", "a@x", "2024-01-02T10:00:00 +0000");
+    let changed_head = run();
+    assert!(changed_head.status.success());
+    assert!(!String::from_utf8_lossy(&changed_head.stderr).contains("Using cached analysis"));
+}
+
+#[test]
+fn corrupt_report_cache_is_rebuilt() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let out = tempdir();
+    let args: &[&std::ffi::OsStr] = &[
+        "--no-png".as_ref(),
+        "--output".as_ref(),
+        out.path().as_os_str(),
+        "report".as_ref(),
+    ];
+    assert!(cli(args, f.dir.path()).status.success());
+    fs::write(out.path().join(".git-wrapped-cache.json"), b"broken").unwrap();
+    let repaired = cli(args, f.dir.path());
+    assert!(repaired.status.success());
+    assert!(!String::from_utf8_lossy(&repaired.stderr).contains("Using cached analysis"));
+    let hit = cli(args, f.dir.path());
+    assert!(String::from_utf8_lossy(&hit.stderr).contains("Using cached analysis"));
+}
+
+#[test]
+fn mailmap_and_tag_changes_invalidate_report_cache_without_new_head() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "old@x", "2024-01-01T10:00:00 +0000");
+    let out = tempdir();
+    let args: &[&std::ffi::OsStr] = &[
+        "--no-png".as_ref(),
+        "--output".as_ref(),
+        out.path().as_os_str(),
+        "report".as_ref(),
+    ];
+    assert!(cli(args, f.dir.path()).status.success());
+    assert!(
+        String::from_utf8_lossy(&cli(args, f.dir.path()).stderr).contains("Using cached analysis")
+    );
+
+    fs::write(f.dir.path().join(".mailmap"), "Mapped <new@x> <old@x>\n").unwrap();
+    let changed_mailmap = cli(args, f.dir.path());
+    assert!(changed_mailmap.status.success());
+    assert!(!String::from_utf8_lossy(&changed_mailmap.stderr).contains("Using cached analysis"));
+    assert!(
+        String::from_utf8_lossy(&cli(args, f.dir.path()).stderr).contains("Using cached analysis")
+    );
+
+    assert!(f.git(&["tag", "-a", "-m", "first", "v1"]).status.success());
+    let added_tag = cli(args, f.dir.path());
+    assert!(added_tag.status.success());
+    assert!(!String::from_utf8_lossy(&added_tag.stderr).contains("Using cached analysis"));
+    assert!(f
+        .git(&["tag", "-f", "-a", "-m", "changed", "v1"])
+        .status
+        .success());
+    let changed_tag = cli(args, f.dir.path());
+    assert!(changed_tag.status.success());
+    assert!(!String::from_utf8_lossy(&changed_tag.stderr).contains("Using cached analysis"));
+
+    let external = tempdir();
+    let map = external.path().join("extra.mailmap");
+    fs::write(&map, "Other <other@x> <old@x>\n").unwrap();
+    assert!(f
+        .git(&["config", "mailmap.file", map.to_str().unwrap()])
+        .status
+        .success());
+    assert!(
+        !String::from_utf8_lossy(&cli(args, f.dir.path()).stderr).contains("Using cached analysis")
+    );
+    fs::write(&map, "Another <another@x> <old@x>\n").unwrap();
+    assert!(
+        !String::from_utf8_lossy(&cli(args, f.dir.path()).stderr).contains("Using cached analysis")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_cache_target_is_not_replaced_or_followed() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let out = tempdir();
+    let external = tempdir();
+    let protected = external.path().join("keep.json");
+    fs::write(&protected, b"unchanged").unwrap();
+    std::os::unix::fs::symlink(&protected, out.path().join(".git-wrapped-cache.json")).unwrap();
+    let args: &[&std::ffi::OsStr] = &[
+        "--no-png".as_ref(),
+        "--output".as_ref(),
+        out.path().as_os_str(),
+        "report".as_ref(),
+    ];
+    let result = cli(args, f.dir.path());
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("symlink cache"));
+    assert_eq!(fs::read(&protected).unwrap(), b"unchanged");
+    assert!(
+        fs::symlink_metadata(out.path().join(".git-wrapped-cache.json"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn export_does_not_create_or_use_report_cache() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let out = tempdir();
+    let path = out.path().join("new-report");
+    let result = cli(
+        &["--output".as_ref(), path.as_os_str(), "export".as_ref()],
+        f.dir.path(),
+    );
+    assert!(result.status.success());
+    assert!(result.stdout.starts_with(b"{"));
+    assert!(!path.exists());
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("Using cached analysis"));
+}
+
+#[test]
 fn utc_date_filter_differs_from_commit_offset_and_is_inclusive() {
     let f = Fixture::new();
     f.commit("early", b"early\n", "a@x", "2024-01-01T10:00:00 +0000");
@@ -1048,6 +1246,7 @@ fn explicit_repo_creates_first_report() {
     assert_eq!(
         entries,
         [
+            ".git-wrapped-cache.json",
             "activity-heatmap.svg",
             "activity.svg",
             "additions-deletions.svg",

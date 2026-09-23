@@ -75,6 +75,20 @@ impl Default for AnalysisOptions {
     }
 }
 
+impl AnalysisOptions {
+    pub fn cache_key_json(&self) -> Result<String, String> {
+        serde_json::to_string(&serde_json::json!({
+            "since": self.since,
+            "until": self.until,
+            "author_ids": self.author_ids,
+            "timezone": self.timezone.to_string(),
+            "include_merges": self.include_merges,
+            "exclusions": self.exclusions,
+        }))
+        .map_err(|error| error.to_string())
+    }
+}
+
 struct WorkingContributor {
     name: String,
     commits: u64,

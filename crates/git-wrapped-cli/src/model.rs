@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
     pub email: String,
@@ -27,7 +27,7 @@ pub struct RawCommit {
     pub changes: Vec<FileChange>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommitSummary {
     pub sha: String,
     pub parents: Vec<String>,
@@ -41,7 +41,7 @@ pub struct CommitSummary {
     pub deletions: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ContributorAnalytics {
     pub id: String,
     pub name: String,
@@ -69,7 +69,7 @@ pub struct ContributorAnalytics {
     pub commits_by_month: [u64; 12],
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Activity {
     pub month: String,
     pub commits: u64,
@@ -77,39 +77,39 @@ pub struct Activity {
     pub deletions: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActivityCell {
     pub date: String,
     pub commits: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Peak {
     pub label: String,
     pub count: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Overlap {
     pub first_id: String,
     pub second_id: String,
     pub weeks: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WordCount {
     pub word: String,
     pub count: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TreeSample {
     pub sha: String,
     pub author_date: String,
     pub tracked_files: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommitRecord {
     pub sha: String,
     pub author_id: String,
@@ -125,7 +125,7 @@ pub struct TagDate {
     pub committer_time: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Insights {
     #[serde(rename = "bus_factor_proxy")]
     pub commit_concentration_50: usize,
@@ -143,7 +143,7 @@ pub struct Insights {
     pub largest_cleanup: Option<CommitRecord>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileAnalytics {
     pub path_id: String,
     pub display_path: String,
@@ -159,7 +159,7 @@ pub struct FileAnalytics {
     pub longest_quiet_days: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// Historical metrics belong to each changed file's immediate parent directory.
 /// Rows exist only for parents with changes; current files count recursively beneath each row.
 pub struct DirectoryAnalytics {
@@ -171,14 +171,14 @@ pub struct DirectoryAnalytics {
     pub current_file_count: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExtensionAnalytics {
     pub extension: String,
     pub current_files: usize,
     pub historical_churn: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Award {
     pub slug: String,
     pub title: String,
@@ -189,7 +189,7 @@ pub struct Award {
     pub explanation: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepositoryMetadata {
     pub name: String,
     pub selected_since: Option<String>,
@@ -244,7 +244,7 @@ impl RepositoryMetadata {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepositoryAnalytics {
     pub repository: RepositoryMetadata,
     pub contributors: Vec<ContributorAnalytics>,

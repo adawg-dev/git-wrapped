@@ -18,6 +18,15 @@ struct ConfigFile {
 }
 
 impl Config {
+    pub fn cache_key_json(&self) -> Result<String, String> {
+        serde_json::to_string(&serde_json::json!({
+            "aliases": self.aliases,
+            "timezone": self.timezone,
+            "exclude": self.exclude,
+        }))
+        .map_err(|error| error.to_string())
+    }
+
     pub fn canonical_author_id(&self, id: &str) -> String {
         let id = id.trim().to_lowercase();
         self.aliases

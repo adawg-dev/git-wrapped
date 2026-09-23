@@ -3,6 +3,7 @@ use git_wrapped::{
     analysis::{
         activity_by_day, activity_by_month, analyze_with_options, AnalysisOptions, TimezoneChoice,
     },
+    cache,
     config::Config,
     git::discover,
     model::RepositoryAnalytics,
@@ -41,6 +42,8 @@ struct Cli {
     theme: ThemeArg,
     #[arg(long, global = true)]
     no_png: bool,
+    #[arg(long, global = true)]
+    no_cache: bool,
     #[command(subcommand)]
     command: Option<CommandArg>,
 }
@@ -450,10 +453,31 @@ fn run(cli: Cli) -> Result<(), String> {
         timezone,
         include_merges: !cli.no_merges,
     };
-    if !export {
-        eprintln!("Analyzing Git history...");
-    }
-    let data = analyze_with_options(&repo, &config, &options)?;
+    let cache_path = cli.output.join(".git-wrapped-cache.json");
+    let key = if !export && view.is_none() && !cli.no_cache {
+        match cache::key(&repo, &config, &options, false) {
+            Ok(key) => Some(key),
+            Err(error) => {
+                eprintln!("Warning: could not key analysis cache: {}", safe(&error));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let cached = key
+        .as_ref()
+        .and_then(|expected| cache::load(&cache_path, expected).ok().flatten());
+    let cache_hit = cached.is_some();
+    let data = if let Some(data) = cached {
+        eprintln!("Using cached analysis");
+        data
+    } else {
+        if !export {
+            eprintln!("Analyzing Git history...");
+        }
+        analyze_with_options(&repo, &config, &options)?
+    };
     if repo.shallow {
         eprintln!("Warning: shallow repository; historical totals cover available history only.");
     }
@@ -473,6 +497,11 @@ fn run(cli: Cli) -> Result<(), String> {
             ThemeArg::Light => Theme::Light,
         };
         render_report_with_options(&data, &cli.output, theme, !cli.no_png)?;
+        if let Some(key) = key.as_ref().filter(|_| !cache_hit) {
+            if let Err(error) = cache::save(&cache_path, key, &data) {
+                eprintln!("Warning: could not save analysis cache: {}", safe(&error));
+            }
+        }
         println!("Git Wrapped: {}", safe(&data.repository.name));
         let selection = data.repository.selection_labels();
         let selected = !selection.is_empty();
