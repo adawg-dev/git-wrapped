@@ -182,7 +182,7 @@ fn remove_stale_card(output: &Path, name: &str, expected: &str) -> Result<(), St
     let Ok(meta) = fs::symlink_metadata(&path) else {
         return Ok(());
     };
-    if !meta.is_file() {
+    if !meta.is_file() || meta.len() != expected.len() as u64 {
         return Ok(());
     }
     let Ok(contents) = fs::read_to_string(&path) else {
@@ -1307,6 +1307,29 @@ pub fn render_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_stale_card_is_preserved_without_reading_it() {
+        use std::time::{Duration, SystemTime};
+
+        let temp_root = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let out = tempfile::Builder::new().tempdir_in(temp_root).unwrap();
+        let cards = out.path().join("contributors");
+        fs::create_dir(&cards).unwrap();
+        let path = cards.join("abcdef.svg");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(4 * 1024 * 1024).unwrap();
+        let old_access = SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800);
+        file.set_times(fs::FileTimes::new().set_accessed(old_access))
+            .unwrap();
+        drop(file);
+        assert_eq!(fs::metadata(&path).unwrap().accessed().unwrap(), old_access);
+
+        remove_stale_card(out.path(), "contributors/abcdef.svg", "<svg/>").unwrap();
+        let meta = fs::metadata(path).unwrap();
+        assert_eq!(meta.len(), 4 * 1024 * 1024);
+        assert_eq!(meta.accessed().unwrap(), old_access);
+    }
+
     #[test]
     fn render_escapes_controls_and_xml() {
         assert_eq!(
