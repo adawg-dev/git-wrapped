@@ -1413,6 +1413,51 @@ fn cross_offset_data() -> git_wrapped::model::RepositoryAnalytics {
 }
 
 #[test]
+fn poster_contains_rich_sections_and_escapes_long_names() {
+    let mut data = cross_offset_data();
+    data.repository.name = "<script>&report".into();
+    data.contributors[0].name = format!("{}<script>", "A".repeat(80));
+    let out = tempfile::tempdir().unwrap();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
+    assert!(svg.contains("viewBox=\"0 0 1200 1600\""));
+    for label in ["GROWTH", "PEOPLE", "RHYTHM", "AWARDS", "Lifetime additions"] {
+        assert!(svg.contains(label), "missing {label}");
+    }
+    assert!(svg.contains("&lt;script&gt;&amp;report"));
+    assert!(!svg.contains("<script>"));
+    assert!(!svg.contains(&"A".repeat(80)));
+}
+
+#[cfg(unix)]
+#[test]
+fn report_rejects_symlinked_awards_directory_and_json_target() {
+    let data = cross_offset_data();
+    let out = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(external.path(), out.path().join("awards")).unwrap();
+    assert!(git_wrapped::render::render_report(
+        &data,
+        out.path(),
+        git_wrapped::render::Theme::Dark
+    )
+    .is_err());
+    assert_eq!(fs::read_dir(external.path()).unwrap().count(), 0);
+    fs::remove_file(out.path().join("awards")).unwrap();
+    let protected = tempfile::NamedTempFile::new().unwrap();
+    fs::write(protected.path(), "untouched").unwrap();
+    std::os::unix::fs::symlink(protected.path(), out.path().join("data.json")).unwrap();
+    assert!(git_wrapped::render::render_report(
+        &data,
+        out.path(),
+        git_wrapped::render::Theme::Dark
+    )
+    .is_err());
+    assert_eq!(fs::read_to_string(protected.path()).unwrap(), "untouched");
+}
+
+#[test]
 fn cross_offset_age_counts_elapsed_full_days() {
     let data = cross_offset_data();
     // The instants are 25 hours apart, despite reversed local dates.
@@ -1446,22 +1491,71 @@ fn activity_maximum_bar_reaches_axis_maximum() {
 }
 
 #[test]
-fn summary_sparkline_uses_only_observed_months() {
+fn summary_growth_band_labels_calendar_gaps() {
     let mut data = cross_offset_data();
     let out = tempfile::tempdir().unwrap();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
-    assert!(svg.contains("<circle cx=\"64\" cy=\"563.00\" r=\"4\""));
-    assert!(!svg.contains("<polyline"));
+    assert!(svg.contains("2024-01: +2 additions, −0 deletions"));
+    assert!(!svg.contains("2024-02:"));
     data.activity.push(git_wrapped::model::Activity {
-        month: "2024-02".into(),
+        month: "2024-03".into(),
         commits: 1,
-        additions: 0,
-        deletions: 0,
+        additions: 3,
+        deletions: 1,
     });
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
-    assert!(svg.contains("points=\"64.00,563.00 1131.00,593.00\""));
+    assert!(svg.contains("2024-01 → 2024-03"));
+    assert!(svg.contains("2024-02: +0 additions, −0 deletions"));
+    assert!(svg.contains("2024-03: +3 additions, −1 deletions"));
+}
+
+#[test]
+fn summary_explains_months_without_line_changes() {
+    let mut data = cross_offset_data();
+    for month in &mut data.activity {
+        month.additions = 0;
+        month.deletions = 0;
+    }
+    let out = tempfile::tempdir().unwrap();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
+    assert!(svg.contains("No line changes to chart"));
+}
+
+#[test]
+fn summary_labels_each_visible_contributor_share() {
+    let f = Fixture::new();
+    for i in 0..4 {
+        f.commit(
+            &format!("{i}.txt"),
+            b"a\n",
+            &format!("{i}@example.com"),
+            "2024-01-01T12:00:00 +0000",
+        );
+    }
+    let mut data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
+    for (i, contributor) in data.contributors.iter_mut().enumerate() {
+        contributor.name = format!("Contributor {i}");
+    }
+    let out = tempfile::tempdir().unwrap();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
+    for i in 0..4 {
+        assert!(svg.contains(&format!("Contributor {i}")));
+    }
+}
+
+#[test]
+fn report_creates_nested_output_directory() {
+    let data = cross_offset_data();
+    let out = tempfile::tempdir().unwrap();
+    let nested = out.path().join("new").join("report");
+    git_wrapped::render::render_report(&data, &nested, git_wrapped::render::Theme::Dark).unwrap();
+    assert!(nested.join("summary.svg").is_file());
 }

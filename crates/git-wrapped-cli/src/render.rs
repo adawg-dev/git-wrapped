@@ -1,11 +1,51 @@
 use crate::model::RepositoryAnalytics;
 use chrono::{Datelike, NaiveDate};
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::ErrorKind,
+    path::{Component, Path},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Theme {
     Dark,
     Light,
+}
+
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: &'static str,
+    fg: &'static str,
+    muted: &'static str,
+    accent: &'static str,
+    secondary: &'static str,
+    positive: &'static str,
+    negative: &'static str,
+}
+
+impl Theme {
+    fn palette(self) -> Palette {
+        match self {
+            Theme::Dark => Palette {
+                bg: "#10131f",
+                fg: "#f4f5fb",
+                muted: "#a7aec6",
+                accent: "#8f7cff",
+                secondary: "#55c9d2",
+                positive: "#72d9ad",
+                negative: "#ee9a9a",
+            },
+            Theme::Light => Palette {
+                bg: "#f7f7fc",
+                fg: "#172033",
+                muted: "#535e76",
+                accent: "#5b43c9",
+                secondary: "#087b83",
+                positive: "#18734d",
+                negative: "#a33f48",
+            },
+        }
+    }
 }
 
 fn escape_xml(value: &str) -> String {
@@ -67,50 +107,71 @@ fn monthly_counts(data: &RepositoryAnalytics) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// Write the fixed report artifacts. Repository data never determines output paths.
-pub fn render_report(
-    data: &RepositoryAnalytics,
-    output: &Path,
-    theme: Theme,
-) -> Result<(), String> {
-    let (bg, fg, accent, muted) = match theme {
-        Theme::Dark => ("#10131f", "#f4f5fb", "#8f7cff", "#a7aec6"),
-        Theme::Light => ("#f7f7fc", "#172033", "#5b43c9", "#535e76"),
-    };
-    if fs::symlink_metadata(output).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(format!(
+fn checked_directory(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
             "refusing symlink output directory: {}",
-            output.display()
-        ));
-    }
-    fs::create_dir_all(output.join("awards"))
-        .map_err(|e| format!("create {}: {e}", output.display()))?;
-    let write = |name: &str, height, body: String| -> Result<(), String> {
-        let path = output.join(name);
-        // Refuse pre-existing symlinks instead of following them outside the report.
-        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(format!("refusing symlink output: {}", path.display()));
+            path.display()
+        )),
+        Ok(meta) if !meta.is_dir() => Err(format!("output is not a directory: {}", path.display())),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                checked_directory(parent)?;
+            }
+            fs::create_dir(path).map_err(|e| format!("create {}: {e}", path.display()))
         }
-        fs::write(&path, svg(height, bg, &body))
-            .map_err(|e| format!("write {}: {e}", path.display()))
-    };
-    if fs::symlink_metadata(output.join("awards")).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err("refusing symlink awards directory".into());
+        Err(error) => Err(format!("inspect {}: {error}", path.display())),
     }
-    let empty = match theme {
-        Theme::Dark => "#282e43",
-        Theme::Light => "#e0e2ec",
-    };
-    let months = monthly_counts(data);
+}
+
+pub(crate) fn write_artifact(
+    output: &Path,
+    relative_name: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if !Path::new(relative_name)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)))
+    {
+        return Err(format!("invalid artifact name: {relative_name}"));
+    }
+    checked_directory(output)?;
+    let path = output.join(relative_name);
+    if let Some(parent) = path.parent() {
+        let mut current = output.to_path_buf();
+        for part in parent
+            .strip_prefix(output)
+            .map_err(|e| e.to_string())?
+            .components()
+        {
+            current.push(part);
+            checked_directory(&current)?;
+        }
+    }
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(format!("refusing symlink output: {}", path.display()))
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(format!("output is not a file: {}", path.display()))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    }
+    fs::write(&path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn poster(data: &RepositoryAnalytics, p: Palette) -> String {
     let r = &data.repository;
-    let heading =
-        |title: &str| text(64, 66, 18, accent, "GIT WRAPPED") + &text(64, 125, 42, fg, title);
-    let mut body = heading(&short(&r.name, 42));
+    let mut body = text(64, 70, 20, p.accent, "GIT WRAPPED");
+    body += &text(64, 138, 48, p.fg, &short(&r.name, 38));
     body += &text(
         64,
-        163,
+        182,
         18,
-        muted,
+        p.muted,
         &format!(
             "{} — {} · {} days{}",
             r.first_commit.split('T').next().unwrap_or(""),
@@ -123,72 +184,242 @@ pub fn render_report(
             }
         ),
     );
+    body += &text(
+        64,
+        244,
+        18,
+        p.muted,
+        "GROWTH  ·  PEOPLE  ·  RHYTHM  ·  AWARDS",
+    );
+
     for (i, (value, label)) in [
-        (r.total_commits.to_string(), "commits"),
-        (r.total_contributors.to_string(), "contributors"),
-        (format!("+{}", r.additions), "lines ever added"),
-        (format!("−{}", r.deletions), "lines ever deleted"),
+        (r.total_commits.to_string(), "Commits"),
+        (r.total_contributors.to_string(), "Contributors"),
+        (r.tracked_files.to_string(), "Tracked files at HEAD"),
+        (r.age_days.to_string(), "Days of history"),
+        (format!("+{}", r.additions), "Lifetime additions"),
+        (format!("−{}", r.deletions), "Lifetime deletions"),
     ]
     .iter()
     .enumerate()
     {
-        let x = 64 + i as u32 * 280;
-        body += &text(x, 252, 40, fg, value);
-        body += &text(x, 284, 18, muted, label);
+        let x = 64 + (i % 3) as u32 * 365;
+        let y = 322 + (i / 3) as u32 * 103;
+        body += &text(x, y, 34, p.fg, value);
+        body += &text(x, y + 28, 17, p.muted, label);
     }
-    body += &text(64, 348, 18, accent, "TOP CONTRIBUTORS");
-    body += &text(625, 348, 18, accent, "AWARD HIGHLIGHTS");
-    for (i, c) in data.contributors.iter().take(3).enumerate() {
-        body += &text(
-            64,
-            389 + i as u32 * 38,
-            22,
-            fg,
-            &format!("{}  ·  {} commits", short(&c.name, 25), c.commits),
-        );
+
+    body += &text(64, 555, 20, p.accent, "GROWTH");
+    body += &text(
+        64,
+        585,
+        17,
+        p.muted,
+        "Historical line changes by month · 12 calendar buckets max",
+    );
+    let months = monthly_counts(data);
+    if months.is_empty() {
+        body += &text(64, 695, 20, p.muted, "No monthly activity to chart");
+    } else {
+        let changes: std::collections::BTreeMap<_, _> = data
+            .activity
+            .iter()
+            .map(|a| (a.month.as_str(), (a.additions, a.deletions)))
+            .collect();
+        let count = months.len().min(12);
+        let mut buckets = vec![(0_u64, 0_u64); count];
+        let mut labels = vec![(String::new(), String::new()); count];
+        for (i, (month, _)) in months.iter().enumerate() {
+            let (adds, deletes) = changes.get(month.as_str()).copied().unwrap_or((0, 0));
+            let index = i * count / months.len();
+            let bucket = &mut buckets[index];
+            bucket.0 += adds;
+            bucket.1 += deletes;
+            if labels[index].0.is_empty() {
+                labels[index].0 = month.clone();
+            }
+            labels[index].1 = month.clone();
+        }
+        let max = buckets
+            .iter()
+            .map(|(a, d)| a.saturating_add(*d))
+            .max()
+            .unwrap_or(0);
+        if max == 0 {
+            body += &text(64, 695, 20, p.muted, "No line changes to chart");
+        } else {
+            let step = 1048.0 / count as f64;
+            for (i, (adds, deletes)) in buckets.iter().enumerate() {
+                let x = 72.0 + i as f64 * step;
+                let add_h = *adds as f64 / max as f64 * 126.0;
+                let del_h = *deletes as f64 / max as f64 * 126.0;
+                let month = if labels[i].0 == labels[i].1 {
+                    labels[i].0.clone()
+                } else {
+                    format!("{}–{}", labels[i].0, labels[i].1)
+                };
+                body += &format!(
+                    "<g><title>{}: +{} additions, −{} deletions</title>",
+                    escape_xml(&month),
+                    adds,
+                    deletes
+                );
+                body += &rect(x, 738.0 - add_h, step * 0.64, add_h, p.positive);
+                body += &rect(x, 738.0 - add_h - del_h, step * 0.64, del_h, p.negative);
+                body += "</g>";
+            }
+            body += &text(
+                64,
+                773,
+                16,
+                p.muted,
+                &format!(
+                    "{} → {} · lines changed, stacked: additions",
+                    months.first().unwrap().0,
+                    months.last().unwrap().0
+                ),
+            );
+            body += &rect(785.0, 758.0, 16.0, 16.0, p.positive);
+            body += &text(809, 773, 16, p.muted, "added");
+            body += &rect(932.0, 758.0, 16.0, 16.0, p.negative);
+            body += &text(956, 773, 16, p.muted, "deleted");
+        }
     }
-    for (i, a) in data.awards.iter().take(3).enumerate() {
-        body += &text(
-            625,
-            389 + i as u32 * 38,
-            20,
-            fg,
-            &format!("{} · {}", short(&a.title, 22), short(&a.winner, 19)),
-        );
+
+    body += &text(64, 832, 20, p.accent, "PEOPLE");
+    body += &text(
+        64,
+        863,
+        17,
+        p.muted,
+        "Share of commits · author identities after mailmap",
+    );
+    let total = r.total_commits.max(1) as f64;
+    let mut x = 64.0;
+    for (i, c) in data.contributors.iter().take(4).enumerate() {
+        let width = c.commits as f64 / total * 1072.0;
+        let color = [p.accent, p.secondary, p.positive, p.negative][i];
+        body += &rect(x, 889.0, width, 28.0, color);
+        x += width;
+    }
+    if x < 1136.0 {
+        body += &rect(x, 889.0, 1136.0 - x, 28.0, p.muted);
+    }
+    if data.contributors.is_empty() {
+        body += &text(64, 962, 18, p.muted, "No contributors to chart");
+    } else {
+        for (i, c) in data.contributors.iter().take(4).enumerate() {
+            let x = 64 + (i % 2) as u32 * 555;
+            let y = 961 + (i / 2) as u32 * 38;
+            body += &rect(
+                x as f64,
+                (y - 16) as f64,
+                16.0,
+                16.0,
+                [p.accent, p.secondary, p.positive, p.negative][i],
+            );
+            body += &text(
+                x + 28,
+                y,
+                18,
+                p.fg,
+                &format!(
+                    "{}  ·  {} commits ({:.1}%)",
+                    short(&c.name, 25),
+                    c.commits,
+                    c.commit_percent
+                ),
+            );
+        }
+        if data.contributors.len() > 4 {
+            body += &text(
+                64,
+                1048,
+                17,
+                p.muted,
+                &format!(
+                    "Top 4 of {} shown; muted segment = everyone else",
+                    data.contributors.len()
+                ),
+            );
+        }
+    }
+
+    body += &text(64, 1101, 20, p.accent, "RHYTHM");
+    body += &text(
+        64,
+        1131,
+        17,
+        p.muted,
+        "Commits by author local hour · 00:00–23:00",
+    );
+    let mut hours = [0_u64; 24];
+    for c in &data.contributors {
+        for (hour, value) in c.commits_by_hour.iter().enumerate() {
+            hours[hour] += value;
+        }
+    }
+    let max = hours.iter().copied().max().unwrap_or(0);
+    if max == 0 {
+        body += &text(64, 1230, 20, p.muted, "No hourly activity to chart");
+    } else {
+        for (i, value) in hours.iter().enumerate() {
+            let x = 68.0 + i as f64 * 44.0;
+            let h = *value as f64 / max as f64 * 100.0;
+            body += &rect(x, 1262.0 - h, 28.0, h, p.secondary);
+        }
+        for hour in [0, 6, 12, 18, 23] {
+            body += &text(68 + hour * 44, 1292, 16, p.muted, &format!("{hour:02}"));
+        }
+    }
+
+    body += &text(64, 1365, 20, p.accent, "AWARDS");
+    if data.awards.is_empty() {
+        body += &text(64, 1425, 20, p.muted, "No eligible winners");
+    } else {
+        for (i, award) in data.awards.iter().take(2).enumerate() {
+            let x = 64 + i as u32 * 555;
+            body += &text(x, 1410, 18, p.muted, &short(&award.title, 26));
+            body += &text(x, 1451, 26, p.fg, &short(&award.winner, 28));
+            body += &text(
+                x,
+                1484,
+                17,
+                p.secondary,
+                &short(&format!("{} · {}", award.value, award.metric), 42),
+            );
+        }
     }
     body += &text(
         64,
-        530,
+        1553,
         16,
-        muted,
-        "ACTIVITY · UP TO 12 BUCKETS ACROSS ANALYZED MONTHS",
+        p.muted,
+        "Lifetime additions/deletions count historical changed lines, not current file size.",
     );
-    let mut buckets = vec![0_u64; months.len().min(12)];
-    let bucket_count = buckets.len();
-    for (i, (_, count)) in months.iter().enumerate() {
-        buckets[i * bucket_count / months.len()] += count;
-    }
-    let max = buckets.iter().copied().max().unwrap_or(1).max(1) as f64;
-    let points = buckets
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            format!(
-                "{:.2},{:.2}",
-                64.0 + i as f64 * 1067.0 / bucket_count.saturating_sub(1).max(1) as f64,
-                623.0 - *n as f64 / max * 60.0
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if bucket_count == 1 {
-        body += &format!("<circle cx=\"64\" cy=\"563.00\" r=\"4\" fill=\"{accent}\"/>");
-    } else if bucket_count > 1 {
-        body += &format!(
-            "<polyline points=\"{points}\" fill=\"none\" stroke=\"{accent}\" stroke-width=\"4\"/>"
-        );
-    }
-    write("summary.svg", 675, body)?;
+    svg(1600, p.bg, &body)
+}
+
+/// Write the fixed report artifacts. Repository data never determines output paths.
+pub fn render_report(
+    data: &RepositoryAnalytics,
+    output: &Path,
+    theme: Theme,
+) -> Result<(), String> {
+    let palette = theme.palette();
+    let (bg, fg, accent, muted) = (palette.bg, palette.fg, palette.accent, palette.muted);
+    let write = |name: &str, height, body: String| -> Result<(), String> {
+        write_artifact(output, name, svg(height, bg, &body).as_bytes())
+    };
+    let empty = match theme {
+        Theme::Dark => "#282e43",
+        Theme::Light => "#e0e2ec",
+    };
+    let months = monthly_counts(data);
+    let r = &data.repository;
+    let heading =
+        |title: &str| text(64, 66, 18, accent, "GIT WRAPPED") + &text(64, 125, 42, fg, title);
+    write_artifact(output, "summary.svg", poster(data, palette).as_bytes())?;
 
     let mut body = heading("The people behind the commits");
     let max = data
@@ -371,16 +602,10 @@ pub fn render_report(
         }
         write(&format!("awards/{slug}.svg"), 675, body)?;
     }
-    let path = output.join("data.json");
-    if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err("refusing symlink data.json".into());
-    }
-    let mut file =
-        fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    serde_json::to_writer_pretty(&mut file, data)
-        .map_err(|e| format!("serialize {}: {e}", path.display()))?;
-    file.write_all(b"\n")
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    let mut json =
+        serde_json::to_vec_pretty(data).map_err(|e| format!("serialize data.json: {e}"))?;
+    json.push(b'\n');
+    write_artifact(output, "data.json", &json)
 }
 
 #[cfg(test)]
