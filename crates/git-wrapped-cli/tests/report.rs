@@ -830,6 +830,10 @@ fn concentration_uses_normalized_contributors() {
     assert_eq!(data.contributors.len(), 3);
     assert_eq!(data.contributors[0].commits, 2);
     assert_eq!(data.insights.commit_concentration_50, 1);
+    assert_eq!(
+        serde_json::to_value(&data.insights).unwrap()["bus_factor_proxy"],
+        1
+    );
 }
 
 #[test]
