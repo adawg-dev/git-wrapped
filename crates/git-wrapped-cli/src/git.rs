@@ -175,15 +175,6 @@ fn change(item: &[u8]) -> Result<FileChange, String> {
     })
 }
 
-#[cfg(test)]
-fn parse_numstat(bytes: &[u8]) -> Result<Vec<FileChange>, String> {
-    bytes
-        .split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
-        .map(change)
-        .collect()
-}
-
 fn parse<R: BufRead>(
     reader: &mut R,
     visit: &mut impl FnMut(RawCommit) -> Result<(), String>,
@@ -267,12 +258,47 @@ pub fn scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn record(changes: &[u8]) -> Vec<u8> {
+        let mut bytes = format!("\x1e{}\0\0Test\0test@example.com\0Test\0test@example.com\02024-01-01T10:00:00+00:00\02024-01-01T10:00:00+00:00\0subject\0\0\n", "a".repeat(40)).into_bytes();
+        bytes.extend_from_slice(changes);
+        bytes
+    }
+
     #[test]
-    fn numstat_handles_newline_path_and_binary() {
-        let changes = parse_numstat(b"4\t2\todd\nname.rs\0-\t-\tphoto.png\0").unwrap();
-        assert_eq!(changes.len(), 2);
-        assert_eq!(changes[0].path, b"odd\nname.rs");
-        assert_eq!((changes[0].additions, changes[0].deletions), (4, 2));
-        assert!(changes[1].binary);
+    fn stream_preserves_non_utf8_ordinary_path() {
+        let bytes = record(b"4\t2\todd\xff\nname.rs\0-\t-\tphoto.png\0");
+        let mut commits = Vec::new();
+        parse(&mut std::io::Cursor::new(bytes), &mut |commit| {
+            commits.push(commit);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].changes[0].path, b"odd\xff\nname.rs");
+        assert_eq!(
+            (
+                commits[0].changes[0].additions,
+                commits[0].changes[0].deletions
+            ),
+            (4, 2)
+        );
+        assert!(commits[0].changes[1].binary);
+    }
+
+    #[test]
+    fn stream_preserves_non_utf8_rename_paths() {
+        let bytes = record(b"0\t0\t\0old\xff.rs\0new\xfe.rs\0");
+        let mut commits = Vec::new();
+        parse(&mut std::io::Cursor::new(bytes), &mut |commit| {
+            commits.push(commit);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(
+            commits[0].changes[0].old_path.as_deref(),
+            Some(b"old\xff.rs".as_slice())
+        );
+        assert_eq!(commits[0].changes[0].path, b"new\xfe.rs");
     }
 }

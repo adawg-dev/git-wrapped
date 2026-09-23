@@ -9,7 +9,7 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
-        let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let f = Self { dir };
         assert!(f.git(&["init", "-q", "-b", "master"]).status.success());
         assert!(f.git(&["config", "user.name", "Test"]).status.success());
