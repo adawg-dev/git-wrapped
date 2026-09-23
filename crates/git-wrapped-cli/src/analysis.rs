@@ -229,6 +229,20 @@ fn activity_by_week(data: &RepositoryAnalytics) -> Result<Vec<ActivityCell>, Str
 }
 
 pub fn derive_insights(data: &RepositoryAnalytics, tags: &[TagDate]) -> Result<Insights, String> {
+    let mut commit_counts: Vec<_> = data.contributors.iter().map(|c| c.commits).collect();
+    commit_counts.sort_unstable_by(|a, b| b.cmp(a));
+    let mut covered = 0u64;
+    let half = data.repository.total_commits.div_ceil(2);
+    let commit_concentration_50 = commit_counts
+        .into_iter()
+        .take_while(|&commits| {
+            if covered >= half {
+                return false;
+            }
+            covered = covered.saturating_add(commits);
+            true
+        })
+        .count();
     let mut days: Vec<_> = data
         .activity_heatmap
         .iter()
@@ -388,6 +402,7 @@ pub fn derive_insights(data: &RepositoryAnalytics, tags: &[TagDate]) -> Result<I
         })
     };
     Ok(Insights {
+        commit_concentration_50,
         longest_streak: longest,
         current_streak: current,
         busiest_day,

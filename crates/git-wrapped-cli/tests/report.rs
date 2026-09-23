@@ -777,21 +777,20 @@ fn awards_cover_all_ten_positive_metrics() {
     }
     let data = analyze(&discover(f.dir.path()).unwrap(), &Config::default()).unwrap();
     let slugs: Vec<_> = data.awards.iter().map(|a| a.slug.as_str()).collect();
-    assert_eq!(
-        slugs,
-        [
-            "commit-machine",
-            "code-creator",
-            "code-destroyer",
-            "net-positive",
-            "night-owl",
-            "early-bird",
-            "weekend-warrior",
-            "biggest-bang",
-            "biggest-cleanup",
-            "repo-explorer"
-        ]
-    );
+    for slug in [
+        "commit-machine",
+        "code-creator",
+        "code-destroyer",
+        "net-positive",
+        "night-owl",
+        "early-bird",
+        "weekend-warrior",
+        "biggest-bang",
+        "biggest-cleanup",
+        "repo-explorer",
+    ] {
+        assert!(slugs.contains(&slug), "{slug}");
+    }
     for award in &data.awards {
         assert!(!award.winner_id.is_empty());
         assert!(!award.winner.is_empty());
@@ -799,6 +798,38 @@ fn awards_cover_all_ten_positive_metrics() {
         assert!(!award.value.is_empty());
         assert!(!award.explanation.is_empty());
     }
+}
+
+#[test]
+fn concentration_uses_normalized_contributors() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "old@example.com", "2024-01-01T10:00:00 +0000");
+    f.commit(
+        "b",
+        b"b\n",
+        "other@example.com",
+        "2024-01-02T10:00:00 +0000",
+    );
+    f.commit(
+        "c",
+        b"c\n",
+        "third@example.com",
+        "2024-01-03T10:00:00 +0000",
+    );
+    f.commit(
+        "d",
+        b"d\n",
+        "fourth@example.com",
+        "2024-01-04T10:00:00 +0000",
+    );
+    let mut config = Config::default();
+    config
+        .insert_alias_group("Merged", &["old@example.com", "other@example.com"])
+        .unwrap();
+    let data = analyze(&discover(f.dir.path()).unwrap(), &config).unwrap();
+    assert_eq!(data.contributors.len(), 3);
+    assert_eq!(data.contributors[0].commits, 2);
+    assert_eq!(data.insights.commit_concentration_50, 1);
 }
 
 #[test]

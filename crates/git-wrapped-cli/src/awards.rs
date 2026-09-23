@@ -1,4 +1,5 @@
 use crate::model::{Award, ContributorAnalytics, RepositoryAnalytics};
+use chrono::DateTime;
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -12,9 +13,16 @@ enum Kind {
     LargestCommit,
     LargestDeletion,
     Files,
+    Churn,
+    Directories,
+    Streak,
+    Archaeologist,
+    Newcomer,
+    FileHopper,
+    Refactor,
 }
 
-const DEFINITIONS: [(&str, &str, &str, &str, Kind); 10] = [
+const DEFINITIONS: [(&str, &str, &str, &str, Kind); 17] = [
     ("commit-machine", "Commit Machine", "commits", "Most commits authored.", Kind::Commits),
     ("code-creator", "Code Creator", "lines added", "Most lines added.", Kind::Additions),
     ("code-destroyer", "Code Destroyer", "lines deleted", "Most lines deleted.", Kind::Deletions),
@@ -25,6 +33,13 @@ const DEFINITIONS: [(&str, &str, &str, &str, Kind); 10] = [
     ("biggest-bang", "Biggest Bang", "largest commit churn", "Most lines added and deleted in one commit.", Kind::LargestCommit),
     ("biggest-cleanup", "Biggest Cleanup", "largest commit deletion", "Most lines deleted in one commit.", Kind::LargestDeletion),
     ("repo-explorer", "Repo Explorer", "unique files touched", "Most unique files touched.", Kind::Files),
+    ("churn-champion", "Churn Champion", "lines changed", "Most historical lines added and deleted.", Kind::Churn),
+    ("directory-nomad", "Directory Nomad", "directories touched", "Most distinct directories changed.", Kind::Directories),
+    ("streak-keeper", "Streak Keeper", "consecutive active days", "Longest run of consecutive author-local days with a commit.", Kind::Streak),
+    ("repo-archaeologist", "Repo Archaeologist", "first contribution", "Earliest first contribution by author time.", Kind::Archaeologist),
+    ("newcomer", "Newcomer", "first contribution", "Most recent first contribution by author time.", Kind::Newcomer),
+    ("file-hopper", "File Hopper", "unique files touched", "Most distinct files changed across history.", Kind::FileHopper),
+    ("refactor-goblin", "Refactor Goblin", "net lines deleted", "Largest positive net deletion across all authored commits.", Kind::Refactor),
 ];
 
 fn score(contributor: &ContributorAnalytics, kind: Kind) -> Option<(u64, u64)> {
@@ -39,6 +54,12 @@ fn score(contributor: &ContributorAnalytics, kind: Kind) -> Option<(u64, u64)> {
         Kind::LargestCommit => contributor.largest_commit,
         Kind::LargestDeletion => contributor.largest_deletion,
         Kind::Files => contributor.files_touched as u64,
+        Kind::Churn => contributor.churn,
+        Kind::Directories => contributor.directories_touched as u64,
+        Kind::Streak => contributor.longest_streak,
+        Kind::FileHopper => contributor.files_touched as u64,
+        Kind::Refactor => u64::try_from(-i128::from(contributor.net)).unwrap_or(0),
+        Kind::Archaeologist | Kind::Newcomer => return None,
     };
     if count == 0
         || (matches!(kind, Kind::Night | Kind::Early | Kind::Weekend) && contributor.commits < 5)
@@ -73,9 +94,37 @@ fn award(
 }
 
 pub fn select_awards(data: &RepositoryAnalytics) -> Vec<Award> {
-    DEFINITIONS
+    let mut awards: Vec<Award> = DEFINITIONS
         .iter()
         .filter_map(|&(slug, title, metric, explanation, kind)| {
+            if matches!(kind, Kind::Archaeologist | Kind::Newcomer) {
+                let winner = data
+                    .contributors
+                    .iter()
+                    .filter_map(|c| {
+                        DateTime::parse_from_rfc3339(&c.first_contribution)
+                            .ok()
+                            .map(|time| (c, time))
+                    })
+                    .max_by(|(a, a_time), (b, b_time)| {
+                        let order = a_time.cmp(b_time);
+                        (if matches!(kind, Kind::Archaeologist) {
+                            order.reverse()
+                        } else {
+                            order
+                        })
+                        .then_with(|| b.id.cmp(&a.id))
+                    })?
+                    .0;
+                return Some(award(
+                    slug,
+                    title,
+                    winner,
+                    metric,
+                    winner.first_contribution.clone(),
+                    explanation,
+                ));
+            }
             let (winner, (count, denominator)) = data
                 .contributors
                 .iter()
@@ -95,13 +144,42 @@ pub fn select_awards(data: &RepositoryAnalytics) -> Vec<Award> {
                 };
             Some(award(slug, title, winner, metric, value, explanation))
         })
-        .collect()
+        .collect();
+    for (slug, title, metric, explanation, peak) in [
+        (
+            "growth-spurt",
+            "Growth Spurt",
+            "net lines added in month",
+            "Largest monthly net line growth",
+            data.insights.highest_growth_month.as_ref(),
+        ),
+        (
+            "cleanup-crew",
+            "Cleanup Crew",
+            "lines changed in month",
+            "Most historical lines added and deleted in a month",
+            data.insights.highest_churn_month.as_ref(),
+        ),
+    ] {
+        if let Some(peak) = peak.filter(|peak| peak.count > 0) {
+            awards.push(Award {
+                slug: slug.into(),
+                title: title.into(),
+                winner_id: "repository".into(),
+                winner: data.repository.name.clone(),
+                metric: metric.into(),
+                value: peak.count.to_string(),
+                explanation: format!("{explanation} ({}).", peak.label),
+            });
+        }
+    }
+    awards
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::RepositoryMetadata;
+    use crate::model::{Peak, RepositoryMetadata};
 
     fn contributor(id: &str, commits: u64, night: u64) -> ContributorAnalytics {
         let mut commits_by_hour = [0; 24];
@@ -185,5 +263,118 @@ mod tests {
                 .iter()
                 .all(|award| award.slug != "night-owl")
         );
+    }
+
+    #[test]
+    fn extra_awards_have_stable_ties_and_real_values() {
+        let mut a = contributor("a", 6, 0);
+        let mut z = contributor("z", 6, 0);
+        a.churn = 12;
+        z.churn = 12;
+        let awards = select_awards(&data(vec![z, a]));
+        let winner = awards.iter().find(|x| x.slug == "churn-champion").unwrap();
+        assert_eq!(winner.winner_id, "a");
+        assert_eq!(winner.value, "12");
+    }
+
+    #[test]
+    fn zero_value_awards_are_omitted() {
+        let awards = select_awards(&data(vec![contributor("a", 1, 0)]));
+        for slug in [
+            "churn-champion",
+            "directory-nomad",
+            "streak-keeper",
+            "file-hopper",
+            "refactor-goblin",
+            "growth-spurt",
+            "cleanup-crew",
+            "repo-archaeologist",
+            "newcomer",
+        ] {
+            assert!(!awards.iter().any(|award| award.slug == slug), "{slug}");
+        }
+    }
+
+    #[test]
+    fn contributor_awards_use_real_metrics_and_instant_order() {
+        let mut a = contributor("a", 2, 0);
+        a.directories_touched = 2;
+        a.longest_streak = 3;
+        a.first_contribution = "2024-01-01T23:00:00-08:00".into();
+        a.files_touched = 6;
+        a.net = -5;
+        let mut z = contributor("z", 2, 0);
+        z.directories_touched = 3;
+        z.longest_streak = 4;
+        z.first_contribution = "2024-01-02T00:00:00+14:00".into();
+        z.files_touched = 2;
+        z.net = -1;
+        let awards = select_awards(&data(vec![a, z]));
+        for (slug, winner_id, value) in [
+            ("directory-nomad", "z", "3"),
+            ("streak-keeper", "z", "4"),
+            ("repo-archaeologist", "z", "2024-01-02T00:00:00+14:00"),
+            ("newcomer", "a", "2024-01-01T23:00:00-08:00"),
+            ("file-hopper", "a", "6"),
+            ("refactor-goblin", "a", "5"),
+        ] {
+            let award = awards.iter().find(|award| award.slug == slug).unwrap();
+            assert_eq!(
+                (award.winner_id.as_str(), award.value.as_str()),
+                (winner_id, value)
+            );
+            assert!(!award.metric.is_empty());
+            assert!(!award.explanation.is_empty());
+        }
+    }
+
+    #[test]
+    fn first_contribution_award_ties_use_normalized_id() {
+        let date = "2024-01-01T00:00:00+00:00";
+        let mut z = contributor("z", 1, 0);
+        z.first_contribution = date.into();
+        let mut a = contributor("a", 1, 0);
+        a.first_contribution = date.into();
+        let awards = select_awards(&data(vec![z, a]));
+
+        for slug in ["repo-archaeologist", "newcomer"] {
+            assert_eq!(
+                awards
+                    .iter()
+                    .find(|award| award.slug == slug)
+                    .unwrap()
+                    .winner_id,
+                "a"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_awards_use_positive_monthly_records() {
+        let mut data = data(vec![]);
+        data.repository.name = "example".into();
+        data.insights.highest_growth_month = Some(Peak {
+            label: "2024-02".into(),
+            count: 8,
+        });
+        data.insights.highest_churn_month = Some(Peak {
+            label: "2024-03".into(),
+            count: 12,
+        });
+        let awards = select_awards(&data);
+        for (slug, value, month) in [
+            ("growth-spurt", "8", "2024-02"),
+            ("cleanup-crew", "12", "2024-03"),
+        ] {
+            let award = awards.iter().find(|award| award.slug == slug).unwrap();
+            assert_eq!(award.winner_id, "repository");
+            assert_eq!(award.winner, "example");
+            assert_eq!(award.value, value);
+            assert!(award.explanation.contains(month));
+            assert!(!award.metric.is_empty());
+        }
+        data.insights.highest_growth_month.as_mut().unwrap().count = 0;
+        data.insights.highest_churn_month.as_mut().unwrap().count = 0;
+        assert!(select_awards(&data).is_empty());
     }
 }

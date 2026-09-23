@@ -127,6 +127,7 @@ pub struct TagDate {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Insights {
+    pub commit_concentration_50: usize,
     pub longest_streak: u64,
     pub current_streak: u64,
     pub busiest_day: Option<Peak>,
