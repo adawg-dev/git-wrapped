@@ -748,6 +748,231 @@ pub fn render_report(
     );
     write("contributors.svg", 800, body)?;
 
+    let mut people: Vec<_> = data.contributors.iter().collect();
+    people.sort_by(|a, b| b.commits.cmp(&a.commits).then_with(|| a.id.cmp(&b.id)));
+    let mut body = heading("Contributor mix");
+    body += &text(
+        64,
+        175,
+        18,
+        muted,
+        "Share of selected commits · after mailmap",
+    );
+    let total = people.iter().map(|c| c.commits).sum::<u64>().max(1) as f64;
+    let colors = [
+        palette.accent,
+        palette.secondary,
+        palette.positive,
+        palette.negative,
+    ];
+    let mut x = 64.0;
+    for (i, c) in people.iter().take(10).enumerate() {
+        let width = c.commits as f64 / total * 1072.0;
+        body += &rect(x, 215.0, width, 44.0, colors[i % colors.len()]);
+        x += width;
+        let row_y = 307 + i as u32 * 40;
+        body += &rect(
+            64.0,
+            (row_y - 17) as f64,
+            17.0,
+            17.0,
+            colors[i % colors.len()],
+        );
+        body += &text(
+            94,
+            row_y,
+            18,
+            fg,
+            &format!(
+                "{} · {} commits ({:.1}%)",
+                short(&c.name, 39),
+                c.commits,
+                c.commits as f64 / total * 100.0
+            ),
+        );
+    }
+    if x < 1136.0 {
+        body += &rect(x, 215.0, 1136.0 - x, 44.0, muted);
+        if people.len() > 10 {
+            body += &text(64, 737, 16, muted, "Muted segment = all other contributors");
+        }
+    }
+    body += &text(
+        64,
+        775,
+        16,
+        muted,
+        &format!(
+            "Top {} of {} contributors · bar width = commit share",
+            people.len().min(10),
+            people.len()
+        ),
+    );
+    write("contributor-mix.svg", 800, body)?;
+
+    let mut files: Vec<_> = data.files.iter().collect();
+    files.sort_by(|a, b| {
+        b.churn
+            .cmp(&a.churn)
+            .then_with(|| a.path_id.cmp(&b.path_id))
+    });
+    let mut body = heading("Files by historical churn");
+    body += &text(
+        64,
+        176,
+        18,
+        muted,
+        "Lines added + deleted across selected history",
+    );
+    for (i, file) in files.iter().take(10).enumerate() {
+        let status = if file.exists_at_head {
+            "current"
+        } else {
+            "historical path"
+        };
+        body += &text(
+            64,
+            222 + i as u32 * 48,
+            18,
+            fg,
+            &format!(
+                "{}. {} · {} lines · {status}",
+                i + 1,
+                short(&file.display_path, 68),
+                file.churn
+            ),
+        );
+    }
+    if files.is_empty() {
+        body += &text(64, 245, 20, muted, "No file changes in selected history");
+    }
+    body += &text(
+        64,
+        765,
+        16,
+        muted,
+        &format!(
+            "Top {} of {} files · historical path = absent at HEAD",
+            files.len().min(10),
+            files.len()
+        ),
+    );
+    write("file-churn.svg", 800, body)?;
+
+    let mut directories: Vec<_> = data.directories.iter().collect();
+    directories.sort_by(|a, b| {
+        b.churn
+            .cmp(&a.churn)
+            .then_with(|| a.path_id.cmp(&b.path_id))
+    });
+    let mut body = heading("Directory activity");
+    body += &text(
+        64,
+        176,
+        18,
+        muted,
+        "Historical line churn in each changed file's immediate parent",
+    );
+    for (i, dir) in directories.iter().take(10).enumerate() {
+        body += &text(
+            64,
+            222 + i as u32 * 48,
+            18,
+            fg,
+            &format!(
+                "{}. {} · {} lines · {} commits · {} current files",
+                i + 1,
+                short(&dir.display_path, 46),
+                dir.churn,
+                dir.commits,
+                dir.current_file_count
+            ),
+        );
+    }
+    if directories.is_empty() {
+        body += &text(
+            64,
+            245,
+            20,
+            muted,
+            "No directory activity in selected history",
+        );
+    }
+    body += &text(
+        64,
+        765,
+        16,
+        muted,
+        &format!(
+            "Top {} of {} directories · current files counted recursively at HEAD",
+            directories.len().min(10),
+            directories.len()
+        ),
+    );
+    write("directories.svg", 800, body)?;
+
+    let mut top_people: Vec<_> = people.into_iter().take(20).collect();
+    top_people.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut card_names = std::collections::BTreeMap::<String, usize>::new();
+    for c in top_people {
+        let prefix =
+            c.id.as_bytes()
+                .iter()
+                .take(8)
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+        let next = card_names.entry(prefix.clone()).or_default();
+        *next += 1;
+        let name = if *next == 1 {
+            prefix
+        } else {
+            format!("{prefix}-{next}")
+        };
+        let mut body = heading(&short(&c.name, 42));
+        body += &text(64, 174, 18, muted, &short(&c.id, 65));
+        for (i, (label, value)) in [
+            ("Commits", c.commits.to_string()),
+            ("Lines added", c.additions.to_string()),
+            ("Lines deleted", c.deletions.to_string()),
+            ("Active days", c.active_days.to_string()),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let x = 64 + i as u32 % 2 * 540;
+            let y = 275 + i as u32 / 2 * 110;
+            body += &text(x, y, 37, fg, value);
+            body += &text(x, y + 28, 17, muted, label);
+        }
+        body += &text(64, 535, 18, accent, "Author local hour · commits");
+        let max = c.commits_by_hour.iter().copied().max().unwrap_or(0).max(1) as f64;
+        for (hour, count) in c.commits_by_hour.iter().enumerate() {
+            let height = *count as f64 / max * 126.0;
+            body += &rect(
+                72.0 + hour as f64 * 44.0,
+                691.0 - height,
+                28.0,
+                height,
+                palette.secondary,
+            );
+        }
+        for hour in [0, 6, 12, 18, 23] {
+            body += &text(72 + hour * 44, 721, 16, muted, &format!("{hour:02}"));
+        }
+        body += &text(
+            64,
+            770,
+            16,
+            muted,
+            &format!(
+                "{} → {} · author-local dates",
+                c.first_contribution.split('T').next().unwrap_or(""),
+                c.latest_contribution.split('T').next().unwrap_or("")
+            ),
+        );
+        write(&format!("contributors/{name}.svg"), 800, body)?;
+    }
+
     let mut body = heading("Every month tells a story");
     let max = months.iter().map(|a| a.1).max().unwrap_or(1).max(1) as f64;
     let (plot_top, plot_bottom) = (200, 670);
@@ -858,12 +1083,27 @@ pub fn render_report(
         },
     );
     write("activity-heatmap.svg", 800, body)?;
-    for (slug, title) in [
+    let mut award_cards: std::collections::BTreeMap<&str, &str> = [
         ("commit-machine", "Commit Machine"),
         ("code-creator", "Code Creator"),
         ("code-destroyer", "Code Destroyer"),
         ("night-owl", "Night Owl"),
-    ] {
+    ]
+    .into_iter()
+    .collect();
+    for award in &data.awards {
+        if !award.slug.is_empty()
+            && award
+                .slug
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            award_cards.insert(&award.slug, &award.title);
+        } else {
+            return Err(format!("invalid award slug: {}", award.slug));
+        }
+    }
+    for (slug, title) in award_cards {
         let mut body = heading(title);
         body += &text(64, 185, 20, muted, &short(&r.name, 60));
         if let Some(a) = data.awards.iter().find(|a| a.slug == slug) {

@@ -546,8 +546,12 @@ fn explicit_repo_creates_first_report() {
             "additions-deletions.svg",
             "awards",
             "commits-over-time.svg",
+            "contributor-mix.svg",
+            "contributors",
             "contributors.svg",
             "data.json",
+            "directories.svg",
+            "file-churn.svg",
             "highlights.svg",
             "rhythm.svg",
             "summary.svg"
@@ -1625,6 +1629,72 @@ fn summary_labels_each_visible_contributor_share() {
     let svg = fs::read_to_string(out.path().join("summary.svg")).unwrap();
     for i in 0..4 {
         assert!(svg.contains(&format!("Contributor {i}")));
+    }
+}
+
+#[test]
+fn gallery_cards_are_stable_and_paths_are_fixed() {
+    let mut data = cross_offset_data();
+    data.contributors[0].id = "abcdefgh-one@example.com".into();
+    data.contributors[0].name = "../<Same & Name>".into();
+    let mut second = data.contributors[0].clone();
+    second.id = "abcdefgh-two@example.com".into();
+    data.contributors.push(second);
+    data.awards.push(git_wrapped::model::Award {
+        slug: "repo-explorer".into(),
+        title: "Repo Explorer".into(),
+        winner_id: "abcdefgh-one@example.com".into(),
+        winner: "../<Same & Name>".into(),
+        metric: "files touched".into(),
+        value: "2".into(),
+        explanation: "Touched two paths".into(),
+    });
+    data.files[0].exists_at_head = false;
+    let first = tempdir();
+    let second_out = tempdir();
+    for out in [first.path(), second_out.path()] {
+        git_wrapped::render::render_report(&data, out, git_wrapped::render::Theme::Dark).unwrap();
+        for name in [
+            "contributor-mix.svg",
+            "file-churn.svg",
+            "directories.svg",
+            "awards/repo-explorer.svg",
+        ] {
+            assert!(out.join(name).is_file(), "missing {name}");
+        }
+        let names: Vec<_> = fs::read_dir(out.join("contributors"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"6162636465666768.svg".to_string()));
+        assert!(names.contains(&"6162636465666768-2.svg".to_string()));
+        let card = fs::read_to_string(out.join("contributors/6162636465666768.svg")).unwrap();
+        assert!(card.contains("&lt;Same &amp; Name&gt;"));
+        assert!(card.contains("Active days"));
+        assert!(card.contains("Author local hour"));
+        assert!(!card.contains("<Same & Name>"));
+        assert!(fs::read_to_string(out.join("file-churn.svg"))
+            .unwrap()
+            .contains("historical path"));
+        assert!(!out
+            .join("contributors/..")
+            .join("<Same & Name>.svg")
+            .exists());
+    }
+    for name in [
+        "contributor-mix.svg",
+        "file-churn.svg",
+        "directories.svg",
+        "contributors/6162636465666768.svg",
+        "contributors/6162636465666768-2.svg",
+        "awards/repo-explorer.svg",
+    ] {
+        assert_eq!(
+            fs::read(first.path().join(name)).unwrap(),
+            fs::read(second_out.path().join(name)).unwrap(),
+            "nondeterministic {name}"
+        );
     }
 }
 
