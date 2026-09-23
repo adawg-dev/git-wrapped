@@ -4,13 +4,23 @@ Git Wrapped reads a local repository's HEAD-reachable Git history and writes a s
 
 ## Build and run
 
+From the Git Wrapped project checkout:
+
 ```sh
 cargo build --release
 cargo run -- /path/to/repository
 cargo run -- export --format json /path/to/repository > data.json
+cargo install --path crates/git-wrapped-cli
 ```
 
-From inside a repository, `cargo run --` uses the current directory. The installed binary accepts the same arguments:
+`cargo run` works from the project checkout. After `cargo install`, run the binary from any repository to use that repository as the default path:
+
+```sh
+cd /path/to/repository
+git-wrapped
+```
+
+The installed binary also accepts an explicit path:
 
 ```sh
 git-wrapped [PATH] [--output DIR] [--theme dark|light]

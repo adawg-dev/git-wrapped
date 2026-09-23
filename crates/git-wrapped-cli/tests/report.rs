@@ -82,10 +82,24 @@ fn default_and_report_commands_use_invocation_directory() {
     }
     let help = cli(&["--help".as_ref()], f.dir.path());
     assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("\nUsage:"));
     let ambiguous = cli(&[f.dir.path().as_os_str(), "report".as_ref()], f.dir.path());
-    assert!(!ambiguous.status.success());
+    assert_eq!(ambiguous.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&ambiguous.stderr)
         .contains("repository path cannot precede a subcommand"));
+}
+
+#[test]
+fn invalid_argument_does_not_print_terminal_controls() {
+    let cwd = tempfile::tempdir().unwrap();
+    let bad_theme = "bad\r\n\u{85}\x1b[31m";
+    let result = cli(&["--theme".as_ref(), bad_theme.as_ref()], cwd.path());
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!result.stderr.contains(&b'\r'));
+    assert!(!result.stderr.contains(&0x1b));
+    assert!(!String::from_utf8_lossy(&result.stderr).contains('\u{85}'));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid value"));
+    assert!(cli(&["--version".as_ref()], cwd.path()).status.success());
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand, ValueEnum};
 use git_wrapped::{
     analysis::analyze,
     config::Config,
@@ -57,25 +57,27 @@ fn safe(value: &str) -> String {
         .collect()
 }
 
-fn run() -> Result<(), String> {
-    let cli = Cli::parse();
+fn parse() -> Result<Cli, clap::Error> {
+    let cli = Cli::try_parse()?;
+    if cli.repository.is_some() && cli.command.is_some() {
+        return Err(Cli::command().error(
+            ErrorKind::ArgumentConflict,
+            "repository path cannot precede a subcommand",
+        ));
+    }
+    Ok(cli)
+}
+
+fn run(cli: Cli) -> Result<(), String> {
     let (repository, export) = match cli.command {
         None => (cli.repository.unwrap_or_else(|| PathBuf::from(".")), false),
         Some(CommandArg::Report { repository }) => {
-            if cli.repository.is_some() {
-                return Err("repository path cannot precede a subcommand".into());
-            }
             (repository.unwrap_or_else(|| PathBuf::from(".")), false)
         }
         Some(CommandArg::Export {
             format: _,
             repository,
-        }) => {
-            if cli.repository.is_some() {
-                return Err("repository path cannot precede a subcommand".into());
-            }
-            (repository.unwrap_or_else(|| PathBuf::from(".")), true)
-        }
+        }) => (repository.unwrap_or_else(|| PathBuf::from(".")), true),
     };
     let repo = discover(&repository)?;
     let config = Config::load(&repo.root)?;
@@ -127,7 +129,21 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let cli = match parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                print!("{error}");
+            } else {
+                eprintln!("{}", safe(&error.to_string()));
+            }
+            return ExitCode::from(error.exit_code() as u8);
+        }
+    };
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {}", safe(&error));
