@@ -7,6 +7,7 @@ use git_wrapped::{
     cache,
     config::Config,
     deep::{analyze_deep_with_cancel, DeepLimits},
+    external,
     git::discover,
     model::RepositoryAnalytics,
     progress::{CancelFlag, Progress},
@@ -100,6 +101,17 @@ enum CommandArg {
         metric: TopMetric,
         repository: Option<PathBuf>,
     },
+    /// Optional third-party companion tools
+    External {
+        #[command(subcommand)]
+        action: ExternalAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExternalAction {
+    /// List optional companion tools without running any analysis
+    List,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -416,10 +428,43 @@ fn print_view(data: &RepositoryAnalytics, view: View, out: &mut impl Write) -> R
     Ok(())
 }
 
+fn run_external(action: &ExternalAction) -> Result<(), String> {
+    match action {
+        ExternalAction::List => {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            writeln!(out, "tool\tstatus\tversion\tintegration").map_err(|e| e.to_string())?;
+            for tool in external::discover_tools() {
+                writeln!(
+                    out,
+                    "{}\t{}\t{}\t{}",
+                    tool.id,
+                    if tool.installed {
+                        "installed"
+                    } else {
+                        "missing"
+                    },
+                    match (&tool.version, tool.installed) {
+                        (Some(version), _) => safe(version),
+                        (None, true) => "unknown".into(),
+                        (None, false) => "-".into(),
+                    },
+                    tool.integration
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run(cli: Cli) -> Result<(), String> {
     let cancel = CancelFlag::default();
     cancel.install_ctrlc()?;
     let progress = Progress::new(cli.verbose);
+    if let Some(CommandArg::External { action }) = &cli.command {
+        return run_external(action);
+    }
     let (repository, export, view, deep) = match cli.command {
         None => (
             cli.repository.unwrap_or_else(|| PathBuf::from(".")),
@@ -487,6 +532,7 @@ fn run(cli: Cli) -> Result<(), String> {
             Some(View::Contributors(metric.into())),
             false,
         ),
+        Some(CommandArg::External { .. }) => unreachable!("external commands return early"),
     };
     let repo = discover(&repository)?;
     let config = Config::load(&repo.root)?;

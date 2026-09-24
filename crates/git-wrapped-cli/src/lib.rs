@@ -3,6 +3,7 @@ pub mod awards;
 pub mod cache;
 pub mod config;
 pub mod deep;
+pub mod external;
 pub mod git;
 pub mod model;
 pub mod progress;
