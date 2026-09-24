@@ -101,6 +101,8 @@ enum CommandArg {
         repository: Option<PathBuf>,
     },
     Explore {
+        #[arg(long)]
+        deep: bool,
         repository: Option<PathBuf>,
     },
 }
@@ -492,13 +494,13 @@ fn run(cli: Cli) -> Result<(), String> {
             Some(View::Contributors(metric.into())),
             false,
         ),
-        Some(CommandArg::Explore { repository }) => {
+        Some(CommandArg::Explore { repository, deep }) => {
             git_wrapped::tui::require_terminal()?;
             (
                 repository.unwrap_or_else(|| PathBuf::from(".")),
                 false,
                 Some(View::Explore),
-                false,
+                deep,
             )
         }
     };
@@ -567,13 +569,13 @@ fn run(cli: Cli) -> Result<(), String> {
             .write_all(b"\n")
             .map_err(|e| format!("write JSON: {e}"))?;
     } else if let Some(view) = view {
-        let stdout = io::stdout();
-        print_view(&data, view, &mut stdout.lock())?;
         if let Some(key) = key.as_ref().filter(|_| !cache_hit) {
             if let Err(error) = cache::save(&cache_path, key, &data) {
                 eprintln!("Warning: could not save analysis cache: {}", safe(&error));
             }
         }
+        let stdout = io::stdout();
+        print_view(&data, view, &mut stdout.lock())?;
     } else {
         progress.phase("Writing report", None, None);
         let theme = match cli.theme {

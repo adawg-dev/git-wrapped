@@ -1,5 +1,5 @@
 use super::state::{sorted_contributors, sorted_files, AppState, Page, SortKey};
-use crate::model::RepositoryAnalytics;
+use crate::model::{DeepAnalytics, RepositoryAnalytics};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -68,8 +68,8 @@ pub fn draw(frame: &mut Frame, state: &AppState, data: &RepositoryAnalytics) {
     let keys = match state.page {
         Page::Contributors if state.detail => "  Esc back",
         Page::Contributors => "  ↑↓ move  s sort  Enter detail",
-        Page::Files | Page::Awards => "  ↑↓ move",
-        _ => "",
+        Page::Overview | Page::Activity => "",
+        _ => "  ↑↓ move",
     };
     frame.render_widget(Paragraph::new(format!("q quit  Tab/←→ page{keys}")), footer);
     match state.page {
@@ -79,8 +79,195 @@ pub fn draw(frame: &mut Frame, state: &AppState, data: &RepositoryAnalytics) {
         Page::Activity => activity(frame, body, data),
         Page::Files => files(frame, body, state, data),
         Page::Awards => awards(frame, body, state, data),
-        page => frame.render_widget(Paragraph::new(page.title()), body),
+        page => match &data.deep {
+            None => frame.render_widget(
+                Paragraph::new("Run explore --deep to calculate this view")
+                    .wrap(Wrap { trim: true }),
+                body,
+            ),
+            Some(deep) if page == Page::Ownership => ownership(frame, body, state, deep),
+            Some(deep) if page == Page::Survival => survival(frame, body, state, deep),
+            Some(deep) => interactions(frame, body, state, data, deep),
+        },
     }
+}
+
+fn caption(frame: &mut Frame, area: Rect, lines: Vec<String>) -> Rect {
+    let height = lines
+        .iter()
+        .map(|line| {
+            (line.chars().count() as u16)
+                .div_ceil(area.width.max(1))
+                .max(1)
+        })
+        .sum::<u16>()
+        .min(area.height / 3);
+    let [top, rest] =
+        Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+            .wrap(Wrap { trim: true }),
+        top,
+    );
+    rest
+}
+
+fn ownership(frame: &mut Frame, area: Rect, state: &AppState, deep: &DeepAnalytics) {
+    let c = &deep.coverage;
+    let area = caption(
+        frame,
+        area,
+        vec![
+            format!(
+                "Current HEAD: {} nonblank text lines by author (date/author filters do not apply)",
+                deep.surviving_loc
+            ),
+            format!(
+                "Coverage: {} attributed, {} unknown; {} of {} eligible files analyzed; {} binary and {} submodules skipped{}",
+                c.attributed_lines,
+                c.unknown_lines,
+                c.analyzed_files,
+                c.eligible_files,
+                c.skipped_binary,
+                c.skipped_submodules,
+                if c.truncated { "; truncated" } else { "" }
+            ),
+        ],
+    );
+    let rows = deep
+        .ownership
+        .iter()
+        .map(|row| {
+            vec![
+                safe(&row.author_id),
+                row.lines.to_string(),
+                format!("{:.1}%", row.percent),
+            ]
+        })
+        .collect();
+    let header = ["Author ID", "Lines", "Share"].map(String::from).to_vec();
+    table(frame, area, state.selected, header, rows);
+}
+
+fn survival(frame: &mut Frame, area: Rect, state: &AppState, deep: &DeepAnalytics) {
+    let age = &deep.code_age;
+    let days = |value: Option<i64>| value.map_or("n/a".into(), |d| format!("{d} days"));
+    let area = caption(
+        frame,
+        area,
+        vec![
+            "Lines from sampled snapshots still present at HEAD (approximate blame origin)".into(),
+            format!(
+                "Code age median {} · oldest {} · {} future-dated lines clamped",
+                days(age.median_days),
+                days(age.oldest_days),
+                age.future_dated_lines
+            ),
+        ],
+    );
+    let [curve, list] = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).areas(area);
+    let percents: Vec<u64> = deep
+        .survival
+        .iter()
+        .map(|p| p.percent.round() as u64)
+        .collect();
+    frame.render_widget(
+        Sparkline::default()
+            .block(section("Surviving share"))
+            .data(&percents)
+            .max(100),
+        curve,
+    );
+    let wide = area.width >= WIDE;
+    let rows = deep
+        .survival
+        .iter()
+        .map(|p| {
+            let share = format!("{:.1}%", p.percent);
+            if !wide {
+                return vec![safe(&p.snapshot_date), share];
+            }
+            vec![
+                safe(&p.snapshot_date),
+                p.original_lines.to_string(),
+                p.surviving_lines.to_string(),
+                share,
+                format!(
+                    "{}/{}{}",
+                    p.sampled_files,
+                    p.eligible_files,
+                    if p.truncated { " truncated" } else { "" }
+                ),
+            ]
+        })
+        .collect();
+    let header = if wide {
+        ["Snapshot", "Lines", "Surviving", "Share", "Files sampled"].as_slice()
+    } else {
+        ["Snapshot", "Share"].as_slice()
+    };
+    let header = header.iter().map(|h| h.to_string()).collect();
+    table(frame, list, state.selected, header, rows);
+}
+
+fn interactions(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    data: &RepositoryAnalytics,
+    deep: &DeepAnalytics,
+) {
+    let c = &deep.coverage;
+    let area = caption(
+        frame,
+        area,
+        vec![
+            format!(
+                "Lines deleted by one author from another author's lines; {} commits examined, {} skipped. Not review or causality.",
+                c.interaction_commits_examined, c.interaction_commits_skipped
+            ),
+        ],
+    );
+    let [pairs, cochange] =
+        Layout::vertical([Constraint::Fill(2), Constraint::Fill(1)]).areas(area);
+    let rows = deep
+        .interactions
+        .iter()
+        .map(|row| {
+            vec![
+                safe(&row.deleting_author_id),
+                safe(&row.original_author_id),
+                row.deleted_lines.to_string(),
+            ]
+        })
+        .collect();
+    let header = ["Deleting author", "Original author", "Lines"]
+        .map(String::from)
+        .to_vec();
+    table(frame, pairs, state.selected, header, rows);
+    let path = |id: &str| {
+        data.files
+            .iter()
+            .find(|f| f.path_id == id)
+            .map_or_else(|| safe(id), |f| safe(&f.display_path))
+    };
+    let pairs: Vec<String> = deep
+        .coupling
+        .iter()
+        .map(|p| {
+            format!(
+                "{} ↔ {}: {}",
+                path(&p.first_path_id),
+                path(&p.second_path_id),
+                plural(p.cochange_commits, "commit")
+            )
+        })
+        .collect();
+    let title = format!(
+        "File co-change ({} commits examined, {} skipped)",
+        c.coupling_commits_examined, c.coupling_commits_skipped
+    );
+    frame.render_widget(List::new(pairs).block(section(&title)), cochange);
 }
 
 fn table(
@@ -538,6 +725,92 @@ pub(crate) mod tests {
         assert!(files.contains("old .rs") && files.contains("historical"));
         let awards = page(Page::Awards);
         assert!(awards.contains("Commit Machine") && awards.contains("Most selected commits"));
+    }
+
+    fn deep_data() -> RepositoryAnalytics {
+        use crate::model::{
+            DeepAnalytics, DeepCoverage, FilePair, Interaction, OwnershipSlice, SurvivalPoint,
+        };
+        let mut data = sample_data();
+        data.deep = Some(DeepAnalytics {
+            surviving_loc: 12,
+            ownership: vec![OwnershipSlice {
+                author_id: "a\x1b@x".into(),
+                lines: 9,
+                percent: 75.0,
+            }],
+            coverage: DeepCoverage {
+                eligible_files: 3,
+                analyzed_files: 2,
+                skipped_binary: 1,
+                attributed_lines: 9,
+                unknown_lines: 3,
+                interaction_commits_examined: 4,
+                interaction_commits_skipped: 1,
+                ..DeepCoverage::default()
+            },
+            survival: vec![SurvivalPoint {
+                snapshot_sha: "abc".into(),
+                snapshot_date: "2024-01-01".into(),
+                original_lines: 10,
+                surviving_lines: 4,
+                percent: 40.0,
+                sampled_files: 2,
+                eligible_files: 2,
+                truncated: false,
+            }],
+            interactions: vec![Interaction {
+                deleting_author_id: "b@x".into(),
+                original_author_id: "a@x".into(),
+                deleted_lines: 7,
+            }],
+            coupling: vec![FilePair {
+                first_path_id: "src/a.rs".into(),
+                second_path_id: "src/b.rs".into(),
+                cochange_commits: 3,
+            }],
+            ..DeepAnalytics::default()
+        });
+        data
+    }
+
+    fn page_text(page: Page, data: &RepositoryAnalytics) -> String {
+        let state = AppState {
+            page,
+            ..AppState::default()
+        };
+        render(&state, data, 120, 40)
+    }
+
+    #[test]
+    fn ownership_page_explains_missing_deep_data() {
+        for page in [Page::Ownership, Page::Survival, Page::Interactions] {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let state = AppState {
+                page,
+                ..AppState::default()
+            };
+            terminal
+                .draw(|frame| draw(frame, &state, &empty_data()))
+                .unwrap();
+            let text = format!("{:?}", terminal.backend().buffer());
+            assert!(text.contains("Run explore --deep to calculate this view"));
+        }
+    }
+
+    #[test]
+    fn deep_pages_show_measures_with_coverage() {
+        let data = deep_data();
+        let ownership = page_text(Page::Ownership, &data);
+        assert!(ownership.contains("a @x") && ownership.contains("75.0%"));
+        assert!(ownership.contains("Current HEAD") && ownership.contains("3 unknown"));
+        let survival = page_text(Page::Survival, &data);
+        assert!(survival.contains("2024-01-01") && survival.contains("40.0%"));
+        assert!(survival.contains("sampled"));
+        let interactions = page_text(Page::Interactions, &data);
+        assert!(interactions.contains("b@x") && interactions.contains("a@x"));
+        assert!(interactions.contains("4 commits examined, 1 skipped"));
+        assert!(interactions.contains("src/b.rs"));
     }
 
     #[test]

@@ -179,7 +179,10 @@ impl AppState {
             Page::Contributors => data.contributors.len(),
             Page::Files => data.files.len(),
             Page::Awards => data.awards.len(),
-            _ => 0,
+            Page::Ownership => data.deep.as_ref().map_or(0, |d| d.ownership.len()),
+            Page::Survival => data.deep.as_ref().map_or(0, |d| d.survival.len()),
+            Page::Interactions => data.deep.as_ref().map_or(0, |d| d.interactions.len()),
+            Page::Overview | Page::Activity => 0,
         }
     }
 
@@ -351,6 +354,23 @@ pub(crate) mod tests {
         }
         assert_eq!(state.selected, 0);
         assert!(!state.detail);
+    }
+
+    #[test]
+    fn deep_pages_select_within_their_rows() {
+        let mut data = empty_data();
+        data.deep = Some(crate::model::DeepAnalytics {
+            ownership: vec![Default::default(), Default::default()],
+            ..Default::default()
+        });
+        let mut state = AppState {
+            page: Page::Ownership,
+            ..AppState::default()
+        };
+        for _ in 0..3 {
+            state.handle_key(KeyCode::Down, &data);
+        }
+        assert_eq!(state.selected, 1);
     }
 
     #[test]
