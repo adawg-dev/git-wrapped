@@ -15,18 +15,18 @@ pub enum Theme {
 }
 
 #[derive(Clone, Copy)]
-struct Palette {
-    bg: &'static str,
-    fg: &'static str,
-    muted: &'static str,
-    accent: &'static str,
-    secondary: &'static str,
-    positive: &'static str,
-    negative: &'static str,
+pub(crate) struct Palette {
+    pub(crate) bg: &'static str,
+    pub(crate) fg: &'static str,
+    pub(crate) muted: &'static str,
+    pub(crate) accent: &'static str,
+    pub(crate) secondary: &'static str,
+    pub(crate) positive: &'static str,
+    pub(crate) negative: &'static str,
 }
 
 impl Theme {
-    fn palette(self) -> Palette {
+    pub(crate) fn palette(self) -> Palette {
         match self {
             Theme::Dark => Palette {
                 bg: "#10131f",
@@ -65,7 +65,7 @@ fn escape_xml(value: &str) -> String {
         .collect()
 }
 
-fn text(x: u32, y: u32, size: u32, color: &str, value: &str) -> String {
+pub(crate) fn text(x: u32, y: u32, size: u32, color: &str, value: &str) -> String {
     format!("<text x=\"{x}\" y=\"{y}\" font-family=\"Lato,system-ui,sans-serif\" font-size=\"{size}\" fill=\"{color}\">{}</text>", escape_xml(value))
 }
 
@@ -209,7 +209,7 @@ fn svg(height: u32, background: &str, body: &str) -> String {
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"{height}\" viewBox=\"0 0 1200 {height}\"><rect width=\"100%\" height=\"100%\" fill=\"{background}\"/>{body}</svg>\n")
 }
 
-fn rect(x: f64, y: f64, w: f64, h: f64, color: &str) -> String {
+pub(crate) fn rect(x: f64, y: f64, w: f64, h: f64, color: &str) -> String {
     format!("<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"{h:.2}\" rx=\"3\" fill=\"{color}\"/>")
 }
 
@@ -250,7 +250,7 @@ fn top_ownership(parts: &[OwnershipSlice], total: u64) -> Vec<(String, u64, f64)
 }
 
 // Preserve calendar gaps so bars and sparkline positions represent elapsed time.
-fn monthly_counts(data: &RepositoryAnalytics) -> Vec<(String, u64)> {
+pub(crate) fn monthly_counts(data: &RepositoryAnalytics) -> Vec<(String, u64)> {
     let counts: std::collections::BTreeMap<_, _> = data
         .activity
         .iter()
@@ -273,7 +273,7 @@ fn monthly_counts(data: &RepositoryAnalytics) -> Vec<(String, u64)> {
         .collect()
 }
 
-fn checked_directory(path: &Path) -> Result<(), String> {
+pub(crate) fn checked_directory(path: &Path) -> Result<(), String> {
     if let Some(parent) = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty() && *p != path)

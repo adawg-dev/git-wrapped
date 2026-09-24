@@ -9,6 +9,7 @@ use git_wrapped::{
     deep::{analyze_deep_with_cancel, DeepLimits},
     git::discover,
     model::RepositoryAnalytics,
+    motion::{write_gif_with_cancel, write_mp4_with_cancel, GourceOptions},
     progress::{CancelFlag, Progress},
     render::{render_report_with_options, Theme},
 };
@@ -39,8 +40,9 @@ struct Cli {
     timezone: Option<TimezoneChoice>,
     #[arg(long, global = true)]
     no_merges: bool,
-    #[arg(long, default_value = "git-wrapped-report", global = true)]
-    output: PathBuf,
+    /// Report directory (default git-wrapped-report); for `animate`, the output file
+    #[arg(long, global = true)]
+    output: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = ThemeArg::Dark, global = true)]
     theme: ThemeArg,
     #[arg(long, global = true)]
@@ -100,6 +102,24 @@ enum CommandArg {
         metric: TopMetric,
         repository: Option<PathBuf>,
     },
+    /// Write an animated GIF recap or, with Gource and FFmpeg installed, an MP4 history
+    Animate {
+        #[arg(long, value_enum, default_value_t = AnimateFormat::Gif)]
+        format: AnimateFormat,
+        /// MP4 only: Gource simulation seconds per day of history
+        #[arg(long, default_value_t = 0.1)]
+        seconds_per_day: f32,
+        /// MP4 only: hide file names in the Gource view
+        #[arg(long)]
+        hide_filenames: bool,
+        repository: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum AnimateFormat {
+    Gif,
+    Mp4,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -420,6 +440,26 @@ fn run(cli: Cli) -> Result<(), String> {
     let cancel = CancelFlag::default();
     cancel.install_ctrlc()?;
     let progress = Progress::new(cli.verbose);
+    let theme = match cli.theme {
+        ThemeArg::Dark => Theme::Dark,
+        ThemeArg::Light => Theme::Light,
+    };
+    let animate = match &cli.command {
+        Some(CommandArg::Animate {
+            format,
+            seconds_per_day,
+            hide_filenames,
+            ..
+        }) => Some((
+            *format,
+            GourceOptions {
+                seconds_per_day: *seconds_per_day,
+                hide_filenames: *hide_filenames,
+                ..GourceOptions::default()
+            },
+        )),
+        _ => None,
+    };
     let (repository, export, view, deep) = match cli.command {
         None => (
             cli.repository.unwrap_or_else(|| PathBuf::from(".")),
@@ -487,6 +527,12 @@ fn run(cli: Cli) -> Result<(), String> {
             Some(View::Contributors(metric.into())),
             false,
         ),
+        Some(CommandArg::Animate { repository, .. }) => (
+            repository.unwrap_or_else(|| PathBuf::from(".")),
+            false,
+            None,
+            false,
+        ),
     };
     let repo = discover(&repository)?;
     let config = Config::load(&repo.root)?;
@@ -513,7 +559,32 @@ fn run(cli: Cli) -> Result<(), String> {
         timezone,
         include_merges: !cli.no_merges,
     };
-    let cache_path = cli.output.join(".git-wrapped-cache.json");
+    if let Some((format, gource)) = animate {
+        let output = cli.output.unwrap_or_else(|| {
+            PathBuf::from("git-wrapped-report").join(match format {
+                AnimateFormat::Gif => "story.gif",
+                AnimateFormat::Mp4 => "repo-history.mp4",
+            })
+        });
+        match format {
+            AnimateFormat::Gif => {
+                progress.phase("Scanning Git history", None, None);
+                let data = analyze_with_options_and_cancel(&repo, &config, &options, &cancel)?;
+                progress.phase("Rendering GIF story", None, None);
+                write_gif_with_cancel(&data, &output, theme, &cancel)?;
+            }
+            AnimateFormat::Mp4 => {
+                progress.phase("Rendering Gource history", None, None);
+                write_mp4_with_cancel(&repo, &config, &options, &output, gource, &cancel)?;
+            }
+        }
+        println!("Animation written to: {}", safe(&output.to_string_lossy()));
+        return Ok(());
+    }
+    let output = cli
+        .output
+        .unwrap_or_else(|| PathBuf::from("git-wrapped-report"));
+    let cache_path = output.join(".git-wrapped-cache.json");
     let key = if !export && (view.is_none() || deep) && !cli.no_cache {
         match cache::key(&repo, &config, &options, deep) {
             Ok(key) => Some(key),
@@ -562,11 +633,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
     } else {
         progress.phase("Writing report", None, None);
-        let theme = match cli.theme {
-            ThemeArg::Dark => Theme::Dark,
-            ThemeArg::Light => Theme::Light,
-        };
-        render_report_with_options(&data, &cli.output, theme, !cli.no_png)?;
+        render_report_with_options(&data, &output, theme, !cli.no_png)?;
         if let Some(key) = key.as_ref().filter(|_| !cache_hit) {
             if let Err(error) = cache::save(&cache_path, key, &data) {
                 eprintln!("Warning: could not save analysis cache: {}", safe(&error));
@@ -622,7 +689,7 @@ fn run(cli: Cli) -> Result<(), String> {
         for award in data.awards.iter().take(3) {
             println!("  {}: {}", safe(&award.title), safe(&award.winner));
         }
-        println!("Report written to: {}", safe(&cli.output.to_string_lossy()));
+        println!("Report written to: {}", safe(&output.to_string_lossy()));
     }
     Ok(())
 }

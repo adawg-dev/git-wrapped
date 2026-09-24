@@ -5,5 +5,6 @@ pub mod config;
 pub mod deep;
 pub mod git;
 pub mod model;
+pub mod motion;
 pub mod progress;
 pub mod render;

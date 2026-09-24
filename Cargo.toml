@@ -1,3 +1,7 @@
 [workspace]
 members = ["crates/git-wrapped-cli"]
 resolver = "2"
+
+# Keep debug-build GIF tests fast: frame rasterization and quantization dominate.
+[profile.dev.package."*"]
+opt-level = 2
