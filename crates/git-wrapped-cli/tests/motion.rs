@@ -445,3 +445,34 @@ fn animate_mp4_rejects_invalid_seconds_per_day() {
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("--seconds-per-day"));
 }
+
+#[test]
+fn growth_scene_uses_equal_month_buckets() {
+    let mut data = two_commit_data();
+    data.activity = (0..13)
+        .map(|index| git_wrapped::model::Activity {
+            month: format!("{}-{:02}", 2023 + index / 12, index % 12 + 1),
+            commits: 1,
+            additions: 0,
+            deletions: 0,
+        })
+        .collect();
+    let scene = &git_wrapped::motion::story::scenes(&data, Theme::Dark)[1];
+    let svg = scene.at(6, 7);
+    assert!(svg.contains("Commits per 2 calendar months"), "{svg}");
+    assert_eq!(svg.matches(">2</text>").count(), 6, "{svg}");
+    assert_eq!(svg.matches(">1</text>").count(), 1, "{svg}");
+}
+
+#[test]
+fn cancelled_gif_leaves_no_output() {
+    let data = two_commit_data();
+    let dir = tempdir();
+    let out = dir.path().join("story.gif");
+    let cancel = git_wrapped::progress::CancelFlag::default();
+    cancel.cancel();
+    let error =
+        git_wrapped::motion::write_gif_with_cancel(&data, &out, Theme::Dark, &cancel).unwrap_err();
+    assert_eq!(error, "cancelled");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}

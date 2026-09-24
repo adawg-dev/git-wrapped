@@ -9,7 +9,7 @@ use git_wrapped::{
     deep::{analyze_deep_with_cancel, DeepLimits},
     git::discover,
     model::RepositoryAnalytics,
-    motion::{write_gif, write_mp4_with_cancel, GourceOptions},
+    motion::{write_gif_with_cancel, write_mp4_with_cancel, GourceOptions},
     progress::{CancelFlag, Progress},
     render::{render_report_with_options, Theme},
 };
@@ -571,14 +571,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 progress.phase("Scanning Git history", None, None);
                 let data = analyze_with_options_and_cancel(&repo, &config, &options, &cancel)?;
                 progress.phase("Rendering GIF story", None, None);
-                write_gif(&data, &output, theme)?;
+                write_gif_with_cancel(&data, &output, theme, &cancel)?;
             }
             AnimateFormat::Mp4 => {
                 progress.phase("Rendering Gource history", None, None);
                 write_mp4_with_cancel(&repo, &config, &options, &output, gource, &cancel)?;
             }
         }
-        cancel.check()?;
         println!("Animation written to: {}", safe(&output.to_string_lossy()));
         return Ok(());
     }

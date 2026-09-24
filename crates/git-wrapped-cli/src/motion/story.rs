@@ -199,16 +199,26 @@ impl Scene<'_> {
 
     fn growth(&self, p: Palette, t: f64) -> String {
         let months = monthly_counts(self.data);
-        let mut body = self.heading(p, "Growth", "Commits by calendar month · 12 buckets max");
+        // Equal-width buckets keep bar heights comparable; only the last may be shorter.
+        let months_per_bar = months.len().div_ceil(12).max(1);
+        let subtitle = if months_per_bar == 1 {
+            "Commits per calendar month".to_owned()
+        } else {
+            format!("Commits per {months_per_bar} calendar months · last bar may be partial")
+        };
+        let mut body = self.heading(p, "Growth", &subtitle);
         if months.is_empty() {
             return body + &text(48, 360, 22, p.muted, "No monthly activity to chart");
         }
-        let count = months.len().min(12);
-        let mut buckets = vec![0_u64; count];
-        for (index, (_, commits)) in months.iter().enumerate() {
-            let bucket = &mut buckets[index * count / months.len()];
-            *bucket = bucket.saturating_add(*commits);
-        }
+        let buckets: Vec<u64> = months
+            .chunks(months_per_bar)
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .fold(0_u64, |sum, (_, c)| sum.saturating_add(*c))
+            })
+            .collect();
+        let count = buckets.len();
         let max = buckets.iter().copied().max().unwrap_or(0);
         let step = 624.0 / count as f64;
         let width = (step * 0.7).min(72.0);

@@ -101,6 +101,15 @@ impl Drop for TempFile {
 
 /// Write the fixed seven-scene 720×720 GIF recap; the static poster is the reduced-motion alternative.
 pub fn write_gif(data: &RepositoryAnalytics, output: &Path, theme: Theme) -> Result<(), String> {
+    write_gif_with_cancel(data, output, theme, &CancelFlag::default())
+}
+
+pub fn write_gif_with_cancel(
+    data: &RepositoryAnalytics,
+    output: &Path,
+    theme: Theme,
+    cancel: &CancelFlag,
+) -> Result<(), String> {
     use image::{codecs::gif, Delay, Frame, RgbaImage};
     let (temp, file) = TempOutput::create(output, ".gif")?;
     {
@@ -112,6 +121,7 @@ pub fn write_gif(data: &RepositoryAnalytics, output: &Path, theme: Theme) -> Res
             .map_err(|e| format!("encode GIF: {e}"))?;
         for scene in story::scenes(data, theme) {
             for index in 0..story::FRAMES_PER_SCENE {
+                cancel.check()?;
                 let svg = scene.at(index, story::FRAMES_PER_SCENE);
                 let rgba = raster::render_rgba(&svg, story::SIZE, story::SIZE)?;
                 let image = RgbaImage::from_raw(story::SIZE, story::SIZE, rgba)
@@ -139,6 +149,7 @@ pub fn write_gif(data: &RepositoryAnalytics, output: &Path, theme: Theme) -> Res
     }
     file.sync_all().map_err(|e| format!("write GIF: {e}"))?;
     drop(file);
+    cancel.check()?;
     temp.publish()
 }
 
@@ -179,5 +190,6 @@ pub fn write_mp4_with_cancel(
         return Err("no selected file changes to animate".into());
     }
     gource::run_pipeline(&log.0, &temp.temp, options, cancel)?;
+    cancel.check()?;
     temp.publish()
 }
