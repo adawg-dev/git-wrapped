@@ -222,8 +222,9 @@ fn interactions(
         frame,
         area,
         vec![
+            "Lines each commit author removed, by the removed lines' blame author (own lines included); merges excluded. Not review or causality.".into(),
             format!(
-                "Lines deleted by one author from another author's lines; {} commits examined, {} skipped. Not review or causality.",
+                "{} deletion-bearing commits examined, {} skipped",
                 c.interaction_commits_examined, c.interaction_commits_skipped
             ),
         ],
@@ -809,7 +810,8 @@ pub(crate) mod tests {
         assert!(survival.contains("sampled"));
         let interactions = page_text(Page::Interactions, &data);
         assert!(interactions.contains("b@x") && interactions.contains("a@x"));
-        assert!(interactions.contains("4 commits examined, 1 skipped"));
+        assert!(interactions.contains("own lines included"));
+        assert!(interactions.contains("4 deletion-bearing commits examined, 1 skipped"));
         assert!(interactions.contains("src/b.rs"));
     }
 

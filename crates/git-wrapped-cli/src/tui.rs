@@ -18,14 +18,18 @@ use std::io::{self, IsTerminal};
 
 struct TerminalGuard;
 
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        ratatui::crossterm::cursor::Show
+    );
+}
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            ratatui::crossterm::cursor::Show
-        );
+        restore_terminal();
     }
 }
 
@@ -38,6 +42,12 @@ pub fn require_terminal() -> Result<(), String> {
 
 pub fn explore(data: &RepositoryAnalytics) -> Result<(), String> {
     require_terminal()?;
+    // Restore before the default hook prints, so a panic message stays visible.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        hook(info);
+    }));
     enable_raw_mode().map_err(|e| e.to_string())?;
     let _restore = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen).map_err(|e| e.to_string())?;
