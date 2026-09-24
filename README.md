@@ -2,7 +2,17 @@
 
 Git Wrapped reads a local repository's HEAD-reachable Git history and writes a shareable SVG report, a PNG poster, and deterministic JSON data. It needs Rust and Git; no hosting account or repository scripts are required.
 
-## Build and run
+## Install
+
+macOS and Linux:
+
+```sh
+curl -fsSL https://github.com/adawg-dev/git-wrapped/releases/latest/download/install.sh | sh
+```
+
+This installs a prebuilt binary to `~/.local/bin` (set `INSTALL_DIR` to change it, `GIT_WRAPPED_VERSION=v0.1.0` to pin a release). Windows users can download the `.zip` from [Releases](https://github.com/adawg-dev/git-wrapped/releases). Git must be installed.
+
+## Build from source
 
 From the Git Wrapped project checkout:
 
