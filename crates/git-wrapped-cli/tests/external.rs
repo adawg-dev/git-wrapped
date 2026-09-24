@@ -142,6 +142,8 @@ fn git_fame_capture_is_source_labeled_and_leaves_canonical_data_alone() {
     assert!(deep.status.success(), "{deep:?}");
     let chart = fs::read_to_string(dir.join("comparison.svg")).unwrap();
     assert!(chart.contains("Ada") && chart.contains("a@x") && chart.contains("1 lines"));
+    assert!(chart.contains("loc 12 · coms 1 · fils 1"), "{chart}");
+    assert!(chart.contains("1/1 regular files analyzed"), "{chart}");
     assert_eq!(fs::read(out.path().join("data.json")).unwrap(), canonical);
 }
 
@@ -155,7 +157,7 @@ fn git_fame_without_header_lists_names_only() {
     let out = tempdir();
     assert!(run_fame(&f, bin.path(), out.path(), false).status.success());
     let chart = fs::read_to_string(out.path().join("external/git-fame/comparison.svg")).unwrap();
-    assert!(chart.contains("Ada") && !chart.contains("Ada ·"));
+    assert!(chart.contains("Ada") && !chart.contains("loc 12"));
 }
 
 #[test]
@@ -292,6 +294,14 @@ fn theseus_run_copies_validated_cohorts_with_manifest() {
     // The tool's temporary output directory is removed.
     let outdir = args.split_whitespace().last().unwrap();
     assert!(!Path::new(outdir).exists());
+
+    // A later run that produces fewer files leaves no stale, unlisted outputs.
+    let bin = fake_path(&[(
+        "git-of-theseus-analyze",
+        &theseus_script("printf '{}' > \"$3/cohorts.json\""),
+    )]);
+    assert!(run_theseus(&f, bin.path(), out.path()).status.success());
+    assert!(!dir.join("authors.json").exists());
 }
 
 #[test]

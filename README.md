@@ -131,4 +131,4 @@ git-wrapped external run git-of-theseus [PATH] [--output DIR]
 
 ## Scope
 
-The current release produces SVG, PNG, JSON, and focused terminal views; `--deep` adds sampled blame-based ownership, survival, deleted-line interactions, and file coupling. A terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.
+The current release produces SVG, PNG, JSON, and focused terminal views; `--deep` adds sampled blame-based ownership, survival, deleted-line interactions, and file coupling. `external` optionally captures third-party analyses beside the report. A terminal explorer and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.

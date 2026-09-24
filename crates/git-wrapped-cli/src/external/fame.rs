@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::{path::Path, process::Command};
 
 const ARGS: &[&str] = &["--silent-progress", "--loc=surviving", "--format=json"];
+const ROWS: usize = 8;
 const MAX_JSON: usize = 16 * 1024 * 1024;
 pub const SOURCE_METRIC: &str = "git-fame surviving LOC";
 const WARNING: &str = "Third-party git-fame analysis: identities are not matched to Git Wrapped contributor IDs (git-fame may apply .mailmap and aliases differently), and its values are not canonical Git Wrapped metrics.";
@@ -46,18 +47,26 @@ pub fn parse_fame(bytes: &[u8]) -> Result<Fame, String> {
     Ok(Fame { columns, rows })
 }
 
-/// "name · loc 12 · coms 3", using only numeric fields named by the header.
-fn row_label(fame: &Fame, name: &str, values: &[Value]) -> String {
-    let mut label = name.to_owned();
+/// "loc 12 · coms 3": numeric fields named by the header, whole fields only, within `max_chars`.
+fn metrics(fame: &Fame, values: &[Value], max_chars: usize) -> String {
+    let mut label = String::new();
     if let Some(columns) = fame
         .columns
         .as_ref()
         .filter(|c| c.len() == values.len() + 1)
     {
         for (column, value) in columns[1..].iter().zip(values) {
-            if value.is_number() {
-                label += &format!(" · {column} {value}");
+            if !value.is_number() {
+                continue;
             }
+            let field = format!(
+                "{}{column} {value}",
+                if label.is_empty() { "" } else { " · " }
+            );
+            if label.chars().count() + field.chars().count() > max_chars {
+                break;
+            }
+            label += &field;
         }
     }
     label
@@ -94,17 +103,12 @@ fn comparison(
             240,
             15,
             p.muted,
-            "git-fame surviving LOC · names as git-fame reports them",
+            "git-fame surviving LOC · first 8 rows, names as git-fame reports them",
         );
-    for (i, (name, values)) in fame.rows.iter().take(10).enumerate() {
-        let label = row_label(fame, name, values);
-        body += &text(
-            64,
-            280 + 34 * i as u32,
-            18,
-            p.fg,
-            &fit_text(&label, 520, 18),
-        );
+    for (i, (name, values)) in fame.rows.iter().take(ROWS).enumerate() {
+        let y = 295 + 44 * i as u32;
+        body += &text(64, y, 18, p.fg, &fit_text(name, 520, 18));
+        body += &text(64, y + 18, 14, p.muted, &metrics(fame, values, 520 / 14));
     }
     match data.and_then(|d| d.deep.as_ref()) {
         Some(deep) => {
@@ -122,17 +126,33 @@ fn comparison(
                 p.muted,
                 "IDs normalized by .mailmap then .git-wrapped.json",
             );
-            for (i, row) in deep.ownership.iter().take(10).enumerate() {
-                let label = format!(
-                    "{} · {} lines ({:.1}%)",
-                    row.author_id, row.lines, row.percent
-                );
+            let c = &deep.coverage;
+            body += &text(
+                640,
+                262,
+                13,
+                p.muted,
+                &format!(
+                    "{}/{} regular files analyzed · {} unknown lines{}",
+                    c.analyzed_files,
+                    c.eligible_files,
+                    c.unknown_lines,
+                    if c.truncated {
+                        " · partial coverage"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+            for (i, row) in deep.ownership.iter().take(ROWS).enumerate() {
+                let y = 295 + 44 * i as u32;
+                body += &text(640, y, 18, p.fg, &fit_text(&row.author_id, 520, 18));
                 body += &text(
                     640,
-                    280 + 34 * i as u32,
-                    18,
-                    p.fg,
-                    &fit_text(&label, 520, 18),
+                    y + 18,
+                    14,
+                    p.muted,
+                    &format!("{} lines · {:.1}%", row.lines, row.percent),
                 );
             }
         }
@@ -219,8 +239,12 @@ mod tests {
         let fame =
             parse_fame(br#"{"data":[["Ada",12,"x"]],"columns":["Author","loc","distribution"]}"#)
                 .unwrap();
-        assert_eq!(row_label(&fame, "Ada", &fame.rows[0].1), "Ada · loc 12");
+        assert_eq!(metrics(&fame, &fame.rows[0].1, 40), "loc 12");
+        let wide = parse_fame(br#"{"data":[["Ada",123456,7]],"columns":["Author","loc","coms"]}"#)
+            .unwrap();
+        assert_eq!(metrics(&wide, &wide.rows[0].1, 20), "loc 123456 · coms 7");
+        assert_eq!(metrics(&wide, &wide.rows[0].1, 12), "loc 123456");
         let bare = parse_fame(br#"{"data":[["Ada",12]]}"#).unwrap();
-        assert_eq!(row_label(&bare, "Ada", &bare.rows[0].1), "Ada");
+        assert_eq!(metrics(&bare, &bare.rows[0].1, 40), "");
     }
 }

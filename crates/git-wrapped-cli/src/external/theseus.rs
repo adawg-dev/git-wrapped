@@ -119,5 +119,16 @@ pub fn capture(executable: &Path, root: &Path, output: &Path) -> Result<(), Stri
     for (name, bytes) in &outputs {
         write_artifact(output, &format!("external/git-of-theseus/{name}"), bytes)?;
     }
+    // Drop named files from an earlier run so the directory matches the manifest.
+    let dir = output.join("external/git-of-theseus");
+    for name in NAMES
+        .iter()
+        .filter(|n| !outputs.iter().any(|(o, _)| o == *n))
+    {
+        let path = dir.join(name);
+        if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+            fs::remove_file(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+        }
+    }
     write_artifact(output, "external/git-of-theseus/manifest.json", &manifest)
 }
