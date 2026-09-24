@@ -123,6 +123,9 @@ fn valid_award_slug(slug: &str) -> bool {
 const MAX_CARD_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 
 fn valid_card_name(name: &str) -> bool {
+    if name == "ship-of-theseus.svg" {
+        return true;
+    }
     let Some((directory, file)) = name.split_once('/') else {
         return false;
     };
@@ -912,29 +915,53 @@ pub fn render_report_with_options(
             muted,
             "Git blame origins; rewrites and unexamined files may change this estimate.",
         );
+        for (percent, y) in [(100, 270), (50, 410), (0, 550)] {
+            body += &format!("<path d=\"M 100 {y} H 1100\" stroke=\"{muted}\" opacity=\"0.35\"/>");
+            body += &text(48, y + 5, 16, muted, &format!("{percent}%"));
+        }
+        let mut dated = deep
+            .survival
+            .iter()
+            .map(|point| {
+                NaiveDate::parse_from_str(&point.snapshot_date, "%Y-%m-%d")
+                    .map(|date| (date, point))
+                    .map_err(|error| format!("invalid survival snapshot date: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        dated.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.snapshot_sha.cmp(&b.1.snapshot_sha))
+        });
         let mut coordinates = Vec::new();
-        for (index, point) in deep.survival.iter().enumerate() {
-            let x = if deep.survival.len() == 1 {
-                600.0
-            } else {
-                100.0 + index as f64 * 1000.0 / (deep.survival.len() - 1) as f64
-            };
-            let y = 550.0 - point.percent * 2.8;
-            coordinates.push(format!("{x:.1},{y:.1}"));
-            body += &format!("<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"7\" fill=\"{accent}\"/>");
-            body += &text(
-                x as u32 - 25,
-                580,
-                14,
-                muted,
-                point.snapshot_date.get(..4).unwrap_or("?"),
-            );
+        let mut markers = String::new();
+        if let (Some((first, _)), Some((last, _))) = (dated.first(), dated.last()) {
+            let span = (*last - *first).num_days();
+            for (date, point) in &dated {
+                let x = if span == 0 {
+                    600.0
+                } else {
+                    100.0 + (*date - *first).num_days() as f64 * 1000.0 / span as f64
+                };
+                let percent = if point.percent.is_finite() {
+                    point.percent.clamp(0.0, 100.0)
+                } else {
+                    0.0
+                };
+                let y = 550.0 - percent * 2.8;
+                coordinates.push(format!("{x:.1},{y:.1}"));
+                markers += &format!("<g><title>{}: {percent:.1}% ({}/{} sampled line identities)</title><circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"7\" fill=\"{accent}\"/></g>", escape_xml(&point.snapshot_date), point.surviving_lines, point.original_lines);
+            }
+            body += &text(100, 585, 16, muted, &first.to_string());
+            if last != first {
+                body += &text(988, 585, 16, muted, &last.to_string());
+            }
         }
         if !coordinates.is_empty() {
             body += &format!(
                 "<polyline fill=\"none\" stroke=\"{accent}\" stroke-width=\"4\" points=\"{}\"/>",
                 coordinates.join(" ")
             );
+            body += &markers;
         } else {
             body += &text(
                 64,
@@ -948,12 +975,21 @@ pub fn render_report_with_options(
         let eligible_files: u64 = deep.survival.iter().map(|point| point.eligible_files).sum();
         body += &text(
             64,
-            635,
+            625,
             17,
             muted,
             &format!(
-                "{} selected snapshots · {covered_files}/{eligible_files} sampled text / regular files · {}",
-                deep.survival.len(),
+                "{} snapshots selected evenly by commit index; plotted by calendar day",
+                deep.survival.len()
+            ),
+        );
+        body += &text(
+            64,
+            652,
+            17,
+            muted,
+            &format!(
+                "{covered_files}/{eligible_files} sampled text / regular files · {}",
                 if deep.coverage.truncated {
                     "partial coverage"
                 } else {
@@ -963,7 +999,7 @@ pub fn render_report_with_options(
         );
         body += &text(
             64,
-            684,
+            700,
             17,
             fg,
             &format!(
@@ -986,12 +1022,14 @@ pub fn render_report_with_options(
             .join(" · ");
         body += &text(
             64,
-            732,
+            748,
             17,
             muted,
             &short(&format!("Surviving line origin years: {cohorts}"), 110),
         );
-        write("ship-of-theseus.svg", 800, body)?;
+        let contents = svg(800, bg, &body);
+        write_artifact(output, "ship-of-theseus.svg", contents.as_bytes())?;
+        current_cards.insert("ship-of-theseus.svg".to_owned(), contents);
     }
 
     let mut body = heading("The people behind the commits");

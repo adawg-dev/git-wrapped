@@ -17,6 +17,7 @@ fn deep_survival_tracks_two_eras_and_writes_only_in_deep_reports() {
     f.commit("a", b"keep\nnew\n", "b@x", "2024-01-01T10:00:00 +0000");
     let repo = discover(f.dir.path()).unwrap();
     let mut data = analyze(&repo, &Config::default()).unwrap();
+    let shallow = data.clone();
     let out = tempdir();
     git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
@@ -37,6 +38,89 @@ fn deep_survival_tracks_two_eras_and_writes_only_in_deep_reports() {
         .unwrap();
     let svg = fs::read_to_string(out.path().join("ship-of-theseus.svg")).unwrap();
     assert!(svg.contains("sampled surviving line identities"));
+    assert!(svg.contains("100%") && svg.contains("50%") && svg.contains("0%"));
+    assert!(svg.contains("2020-01-01") && svg.contains("2024-01-01"));
+    assert!(svg.contains("commit index"));
+    git_wrapped::render::render_report(&shallow, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    assert!(!out.path().join("ship-of-theseus.svg").exists());
+}
+
+#[test]
+fn stale_deep_svg_cleanup_preserves_edits_copies_and_symlinks() {
+    let f = Fixture::new();
+    f.commit("a", b"line\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut deep = analyze(&repo, &Config::default()).unwrap();
+    let shallow = deep.clone();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut deep, Default::default())
+        .unwrap();
+    let out = tempdir();
+    git_wrapped::render::render_report(&deep, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let generated = out.path().join("ship-of-theseus.svg");
+    let unrelated = out.path().join("unrelated.svg");
+    fs::copy(&generated, &unrelated).unwrap();
+    let manifest_path = out.path().join("card-manifest.json");
+    let mut forged: std::collections::BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    forged.insert(
+        "unrelated.svg".into(),
+        fs::read_to_string(&unrelated).unwrap(),
+    );
+    fs::write(&manifest_path, serde_json::to_vec(&forged).unwrap()).unwrap();
+    let edited = fs::read_to_string(&generated)
+        .unwrap()
+        .replace("Ship of Theseus", "Edited chart");
+    fs::write(&generated, &edited).unwrap();
+    git_wrapped::render::render_report(&shallow, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    assert_eq!(fs::read_to_string(&generated).unwrap(), edited);
+    assert!(unrelated.exists());
+
+    git_wrapped::render::render_report(&deep, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let target = out.path().join("target.txt");
+    fs::write(&target, "keep").unwrap();
+    fs::remove_file(&generated).unwrap();
+    std::os::unix::fs::symlink(&target, &generated).unwrap();
+    git_wrapped::render::render_report(&shallow, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    assert!(fs::symlink_metadata(&generated)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+}
+
+#[test]
+fn survival_curve_places_close_calendar_dates_close_together() {
+    let f = Fixture::new();
+    f.commit("a", b"a\n", "a@x", "2020-01-01T10:00:00 +0000");
+    f.commit("a", b"a\nb\n", "a@x", "2020-01-02T10:00:00 +0000");
+    f.commit("a", b"a\nb\nc\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("ship-of-theseus.svg")).unwrap();
+    let second = svg.split("2020-01-02:").nth(1).unwrap();
+    let x = second
+        .split("cx=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!(
+        x < 200.0,
+        "nearby dates should cluster on the calendar axis: {x}"
+    );
 }
 
 #[test]
