@@ -318,11 +318,26 @@ pub(crate) fn mapped_ids(
     config: &Config,
     lines: &[BlamedLine],
 ) -> Result<BTreeMap<(String, String), String>, String> {
-    let identities: Vec<_> = lines
-        .iter()
-        .filter_map(|line| line.author.as_ref())
-        .filter(|id| !id.name.contains(['\n', '\r']) && !id.email.contains(['\n', '\r', '<', '>']))
-        .map(|id| (id.name.clone(), id.email.clone()))
+    mapped_identity_pairs(
+        repo,
+        config,
+        lines
+            .iter()
+            .filter_map(|line| line.author.as_ref())
+            .map(|id| (id.name.clone(), id.email.clone())),
+    )
+}
+
+pub(crate) fn mapped_identity_pairs(
+    repo: &Repository,
+    config: &Config,
+    identities: impl IntoIterator<Item = (String, String)>,
+) -> Result<BTreeMap<(String, String), String>, String> {
+    let identities: Vec<_> = identities
+        .into_iter()
+        .filter(|(name, email)| {
+            !name.contains(['\n', '\r']) && !email.contains(['\n', '\r', '<', '>'])
+        })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();

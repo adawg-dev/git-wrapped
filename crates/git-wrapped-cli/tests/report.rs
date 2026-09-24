@@ -11,6 +11,146 @@ use git_wrapped::progress::CancelFlag;
 use std::{fs, process::Command};
 
 #[test]
+fn sampled_ownership_reuses_selected_snapshots_and_accounts_for_unknown_lines() {
+    let f = Fixture::new();
+    f.commit(
+        "src/a.rs",
+        b"one\ntwo\n",
+        "a@x",
+        "2024-01-01T10:00:00 +0000",
+    );
+    f.commit(
+        "src/a.rs",
+        b"one\nthree\n",
+        "b@x",
+        "2024-02-01T10:00:00 +0000",
+    );
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    let ordinary = data.clone();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let deep = data.deep.as_ref().unwrap();
+    assert_eq!(deep.historical_ownership.len(), 2);
+    assert_eq!(
+        deep.historical_ownership[0].sha,
+        deep.survival[0].snapshot_sha
+    );
+    assert_eq!(
+        deep.historical_ownership[1].sha,
+        deep.survival[1].snapshot_sha
+    );
+    for snapshot in &deep.historical_ownership {
+        assert_eq!(snapshot.total_lines, 2);
+        assert_eq!(
+            snapshot
+                .by_author
+                .iter()
+                .map(|part| part.lines)
+                .sum::<u64>(),
+            2
+        );
+        assert_eq!(
+            snapshot.coverage.attributed_lines + snapshot.coverage.unknown_lines,
+            2
+        );
+        assert_eq!(snapshot.coverage.analyzed_files, 1);
+    }
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Light)
+        .unwrap();
+    let current = fs::read_to_string(out.path().join("ownership.svg")).unwrap();
+    let history = fs::read_to_string(out.path().join("ownership-over-time.svg")).unwrap();
+    assert!(
+        current.contains("HEAD")
+            && current.contains("Directories")
+            && current.contains("Extensions")
+    );
+    assert!(
+        history.contains("sampled")
+            && history.contains("2024-01-01")
+            && history.contains("2024-02-01")
+    );
+    assert!(history.contains("a@x: 2 lines"));
+    git_wrapped::render::render_report(&ordinary, out.path(), git_wrapped::render::Theme::Light)
+        .unwrap();
+    assert!(!out.path().join("ownership.svg").exists());
+    assert!(!out.path().join("ownership-over-time.svg").exists());
+}
+
+#[test]
+fn sampled_ownership_marks_partial_coverage() {
+    let f = Fixture::new();
+    fs::write(f.dir.path().join("0-binary"), b"binary\0blob").unwrap();
+    fs::write(f.dir.path().join("b"), b"two\n").unwrap();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(
+        &repo,
+        &Config::default(),
+        &mut data,
+        git_wrapped::deep::DeepLimits {
+            max_files: 3,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let snapshot = &data.deep.as_ref().unwrap().historical_ownership[0];
+    assert_eq!(snapshot.coverage.eligible_files, 3);
+    assert_eq!(snapshot.coverage.skipped_binary, 1);
+    assert_eq!(snapshot.coverage.analyzed_files, 1);
+    assert_eq!(snapshot.total_lines, 1);
+    assert!(snapshot.coverage.truncated);
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let chart = fs::read_to_string(out.path().join("ownership-over-time.svg")).unwrap();
+    assert!(chart.contains("partial coverage") && chart.contains("1 sampled lines"));
+}
+
+#[test]
+fn sampled_ownership_keeps_empty_snapshot_with_zero_coverage() {
+    let f = Fixture::new();
+    f.commit("empty", b"", "a@x", "2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let snapshot = &data.deep.unwrap().historical_ownership[0];
+    assert_eq!(snapshot.total_lines, 0);
+    assert!(snapshot.by_author.is_empty());
+    assert_eq!(snapshot.coverage.analyzed_files, 1);
+    assert_eq!(snapshot.coverage.unknown_lines, 0);
+}
+
+#[test]
+fn sampled_ownership_chart_groups_authors_beyond_eight() {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let snapshot = &mut data.deep.as_mut().unwrap().historical_ownership[0];
+    snapshot.total_lines = 10;
+    snapshot.coverage.attributed_lines = 10;
+    snapshot.by_author = (b'a'..=b'j')
+        .map(|letter| git_wrapped::model::OwnershipSlice {
+            author_id: format!("{}@x", letter as char),
+            lines: 1,
+            percent: 10.0,
+        })
+        .collect();
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("ownership-over-time.svg")).unwrap();
+    assert!(svg.contains("Other"));
+    assert!(!svg.contains("i@x") && !svg.contains("j@x"));
+}
+
+#[test]
 fn deep_survival_tracks_two_eras_and_writes_only_in_deep_reports() {
     let f = Fixture::new();
     f.commit("a", b"old\nkeep\n", "a@x", "2020-01-01T10:00:00 +0000");
@@ -59,6 +199,7 @@ fn stale_deep_svg_cleanup_preserves_edits_copies_and_symlinks() {
     git_wrapped::render::render_report(&deep, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     let generated = out.path().join("ship-of-theseus.svg");
+    let ownership = out.path().join("ownership.svg");
     let unrelated = out.path().join("unrelated.svg");
     fs::copy(&generated, &unrelated).unwrap();
     let manifest_path = out.path().join("card-manifest.json");
@@ -73,9 +214,14 @@ fn stale_deep_svg_cleanup_preserves_edits_copies_and_symlinks() {
         .unwrap()
         .replace("Ship of Theseus", "Edited chart");
     fs::write(&generated, &edited).unwrap();
+    let edited_ownership = fs::read_to_string(&ownership)
+        .unwrap()
+        .replace("Current HEAD ownership", "Edited ownership");
+    fs::write(&ownership, &edited_ownership).unwrap();
     git_wrapped::render::render_report(&shallow, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     assert_eq!(fs::read_to_string(&generated).unwrap(), edited);
+    assert_eq!(fs::read_to_string(&ownership).unwrap(), edited_ownership);
     assert!(unrelated.exists());
 
     git_wrapped::render::render_report(&deep, out.path(), git_wrapped::render::Theme::Dark)
@@ -84,9 +230,16 @@ fn stale_deep_svg_cleanup_preserves_edits_copies_and_symlinks() {
     fs::write(&target, "keep").unwrap();
     fs::remove_file(&generated).unwrap();
     std::os::unix::fs::symlink(&target, &generated).unwrap();
+    let timeline = out.path().join("ownership-over-time.svg");
+    fs::remove_file(&timeline).unwrap();
+    std::os::unix::fs::symlink(&target, &timeline).unwrap();
     git_wrapped::render::render_report(&shallow, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     assert!(fs::symlink_metadata(&generated)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(fs::symlink_metadata(&timeline)
         .unwrap()
         .file_type()
         .is_symlink());
@@ -217,10 +370,22 @@ fn deep_survival_samples_at_most_twelve_selected_commits() {
         .clone();
     git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
         .unwrap();
-    let points = &data.deep.unwrap().survival;
+    let deep = data.deep.unwrap();
+    let points = &deep.survival;
     assert_eq!(points.len(), 12);
     assert_eq!(points.first().unwrap().snapshot_sha, first);
     assert_eq!(points.last().unwrap().snapshot_sha, last);
+    assert_eq!(deep.historical_ownership.len(), 12);
+    for snapshot in &deep.historical_ownership {
+        assert_eq!(
+            snapshot
+                .by_author
+                .iter()
+                .map(|part| part.lines)
+                .sum::<u64>(),
+            snapshot.total_lines
+        );
+    }
 }
 
 #[test]

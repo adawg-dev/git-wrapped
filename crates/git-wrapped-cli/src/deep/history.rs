@@ -1,8 +1,12 @@
 use super::{blame, blob, entries_at, DeepLimits};
 use crate::{
     analysis::{path_id, TimezoneChoice},
+    config::Config,
     git::Repository,
-    model::{CodeAge, RepositoryAnalytics, SurvivalPoint, YearCohort},
+    model::{
+        CodeAge, DeepCoverage, OwnershipSlice, OwnershipSnapshot, RepositoryAnalytics,
+        SurvivalPoint, YearCohort,
+    },
     progress::CancelFlag,
 };
 use chrono::{DateTime, Datelike, FixedOffset, Utc};
@@ -125,12 +129,13 @@ fn code_age(
 
 pub(super) fn analyze(
     repo: &Repository,
+    config: &Config,
     data: &RepositoryAnalytics,
     mut budget: HistoryBudget,
     cancel: &CancelFlag,
     excluded: &GlobSet,
     head_lines: &[blame::BlamedLine],
-) -> Result<(CodeAge, Vec<SurvivalPoint>, bool), String> {
+) -> Result<(CodeAge, Vec<SurvivalPoint>, Vec<OwnershipSnapshot>, bool), String> {
     let timezone = data.repository.timezone.parse::<TimezoneChoice>()?;
     let age = code_age(data, timezone, head_lines);
     let head = origins(head_lines);
@@ -146,6 +151,7 @@ pub(super) fn analyze(
     commits.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.sha.cmp(&b.1.sha)));
     let count = commits.len().min(12);
     let mut points = Vec::with_capacity(count);
+    let mut ownership = Vec::with_capacity(count);
     let mut truncated = false;
     for index in 0..count {
         cancel.check()?;
@@ -177,6 +183,13 @@ pub(super) fn analyze(
             .filter(|(mode, _, _)| mode == b"100644" || mode == b"100755")
             .count() as u64;
         let mut snapshot = HashSet::new();
+        let mut counts = BTreeMap::<String, u64>::new();
+        let mut raw_counts = BTreeMap::<(String, String), u64>::new();
+        let mut coverage = DeepCoverage {
+            eligible_files,
+            skipped_submodules: tree.iter().filter(|(mode, _, _)| mode == b"160000").count() as u64,
+            ..Default::default()
+        };
         let mut sampled_files = 0;
         let mut partial = false;
         for (mode, oid, path) in tree {
@@ -196,10 +209,12 @@ pub(super) fn analyze(
                 break;
             };
             if content.contains(&0) {
+                coverage.skipped_binary += 1;
                 continue;
             }
             budget.files += 1;
             sampled_files += 1;
+            coverage.analyzed_files += 1;
             if content.is_empty() {
                 continue;
             }
@@ -213,10 +228,37 @@ pub(super) fn analyze(
             )?;
             budget.lines += blamed.len() as u64;
             snapshot.extend(origins(&blamed));
+            for line in &blamed {
+                if let Some(author) = &line.author {
+                    *raw_counts
+                        .entry((author.name.clone(), author.email.clone()))
+                        .or_default() += 1;
+                } else {
+                    coverage.unknown_lines += 1;
+                }
+            }
             if cut {
                 partial = true;
                 break;
             }
+        }
+        cancel.check()?;
+        let mapped = if budget.deadline.is_some_and(|at| Instant::now() >= at) {
+            partial = true;
+            BTreeMap::new()
+        } else {
+            blame::mapped_identity_pairs(repo, config, raw_counts.keys().cloned())?
+        };
+        for (raw, lines) in raw_counts {
+            if let Some(id) = mapped.get(&raw) {
+                coverage.attributed_lines += lines;
+                *counts.entry(id.clone()).or_default() += lines;
+            } else {
+                coverage.unknown_lines += lines;
+            }
+        }
+        if coverage.unknown_lines > 0 {
+            *counts.entry("unknown".into()).or_default() += coverage.unknown_lines;
         }
         let original_lines = snapshot.len() as u64;
         let surviving_lines = snapshot.intersection(&head).count() as u64;
@@ -234,10 +276,30 @@ pub(super) fn analyze(
             eligible_files,
             truncated: partial,
         });
+        coverage.truncated = partial;
+        let total_lines = coverage.attributed_lines + coverage.unknown_lines;
+        ownership.push(OwnershipSnapshot {
+            sha: commit.sha.clone(),
+            author_date: date.date_naive().to_string(),
+            total_lines,
+            by_author: counts
+                .into_iter()
+                .map(|(author_id, lines)| OwnershipSlice {
+                    author_id,
+                    lines,
+                    percent: if total_lines == 0 {
+                        0.0
+                    } else {
+                        100.0 * lines as f64 / total_lines as f64
+                    },
+                })
+                .collect(),
+            coverage,
+        });
         if partial {
             truncated = true;
             break;
         }
     }
-    Ok((age, points, truncated))
+    Ok((age, points, ownership, truncated))
 }

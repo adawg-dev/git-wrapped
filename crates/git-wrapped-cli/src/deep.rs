@@ -280,8 +280,9 @@ pub fn analyze_deep_with_cancel(
     deep.surviving_loc = counted_lines;
     deep.ownership_by_directory = groups(by_directory);
     deep.ownership_by_extension = groups(by_extension);
-    let (code_age, survival, truncated_history) = history::analyze(
+    let (code_age, survival, historical_ownership, truncated_history) = history::analyze(
         repo,
+        config,
         data,
         history::HistoryBudget {
             limits,
@@ -295,6 +296,7 @@ pub fn analyze_deep_with_cancel(
     )?;
     deep.code_age = code_age;
     deep.survival = survival;
+    deep.historical_ownership = historical_ownership;
     deep.coverage.truncated |= truncated_history;
     cancel.check()?;
     if start.elapsed() >= deadline {

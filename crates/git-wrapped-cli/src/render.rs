@@ -1,4 +1,4 @@
-use crate::model::{Activity, RepositoryAnalytics};
+use crate::model::{Activity, OwnershipSlice, RepositoryAnalytics};
 pub mod raster;
 use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 use std::{
@@ -123,7 +123,10 @@ fn valid_award_slug(slug: &str) -> bool {
 const MAX_CARD_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 
 fn valid_card_name(name: &str) -> bool {
-    if name == "ship-of-theseus.svg" {
+    if matches!(
+        name,
+        "ship-of-theseus.svg" | "ownership.svg" | "ownership-over-time.svg"
+    ) {
         return true;
     }
     let Some((directory, file)) = name.split_once('/') else {
@@ -204,6 +207,42 @@ fn svg(height: u32, background: &str, body: &str) -> String {
 
 fn rect(x: f64, y: f64, w: f64, h: f64, color: &str) -> String {
     format!("<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"{h:.2}\" rx=\"3\" fill=\"{color}\"/>")
+}
+
+fn top_ownership(parts: &[OwnershipSlice], total: u64) -> Vec<(String, u64, f64)> {
+    let mut ranked: Vec<_> = parts
+        .iter()
+        .filter(|part| part.author_id != "unknown")
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.lines
+            .cmp(&a.lines)
+            .then_with(|| a.author_id.cmp(&b.author_id))
+    });
+    let other: u64 = ranked.iter().skip(8).map(|part| part.lines).sum();
+    let mut shown: Vec<_> = ranked
+        .into_iter()
+        .take(8)
+        .map(|part| (part.author_id.clone(), part.lines))
+        .collect();
+    shown.sort_by(|a, b| a.0.cmp(&b.0));
+    if other > 0 {
+        shown.push(("Other".into(), other));
+    }
+    if let Some(unknown) = parts.iter().find(|part| part.author_id == "unknown") {
+        shown.push(("unknown".into(), unknown.lines));
+    }
+    shown
+        .into_iter()
+        .map(|(id, lines)| {
+            let percent = if total == 0 {
+                0.0
+            } else {
+                100.0 * lines as f64 / total as f64
+            };
+            (id, lines, percent)
+        })
+        .collect()
 }
 
 // Preserve calendar gaps so bars and sparkline positions represent elapsed time.
@@ -906,6 +945,242 @@ pub fn render_report_with_options(
         write_artifact(output, name, page.as_bytes())?;
     }
     if let Some(deep) = &data.deep {
+        let mut body = heading("Current HEAD ownership");
+        body += &text(
+            64,
+            163,
+            18,
+            muted,
+            "Current HEAD regular text lines; date and author filters do not apply",
+        );
+        body += &text(64, 193, 17, muted, &format!("{} attributed + {} unknown lines · {}/{} regular files analyzed · {} binary skipped · {} submodules skipped{}",
+            deep.coverage.attributed_lines, deep.coverage.unknown_lines,
+            deep.coverage.analyzed_files, deep.coverage.eligible_files,
+            deep.coverage.skipped_binary, deep.coverage.skipped_submodules,
+            if deep.coverage.truncated { " · partial coverage" } else { "" }));
+        body += &text(64, 245, 26, fg, "Contributors · surviving lines");
+        let shown = top_ownership(&deep.ownership, deep.surviving_loc);
+        if shown.is_empty() {
+            body += &text(64, 320, 20, muted, "No attributed text lines");
+        }
+        for (index, (id, lines, percent)) in shown.iter().enumerate() {
+            let y = 285 + index as u32 * 43;
+            body += &text(64, y + 20, 17, fg, &fit_text(id, 225, 17));
+            body += &rect(305.0, y as f64, percent * 6.8, 25.0, accent);
+            body += &text(1010, y + 20, 16, fg, &format!("{lines} · {percent:.1}%"));
+        }
+        for (title, groups, y) in [
+            (
+                "Directories · surviving lines",
+                &deep.ownership_by_directory,
+                750_u32,
+            ),
+            (
+                "Extensions · surviving lines",
+                &deep.ownership_by_extension,
+                1010_u32,
+            ),
+        ] {
+            body += &text(64, y, 26, fg, title);
+            let mut ranked: Vec<_> = groups.iter().collect();
+            ranked.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.group.cmp(&b.group)));
+            if ranked.is_empty() {
+                body += &text(64, y + 43, 18, muted, "No text lines");
+            }
+            for (index, group) in ranked.into_iter().take(5).enumerate() {
+                let row = y + 35 + index as u32 * 40;
+                let percent = if deep.surviving_loc == 0 {
+                    0.0
+                } else {
+                    100.0 * group.lines as f64 / deep.surviving_loc as f64
+                };
+                body += &text(64, row + 18, 16, fg, &fit_text(&group.group, 230, 16));
+                body += &rect(305.0, row as f64, percent * 6.8, 23.0, palette.secondary);
+                body += &text(
+                    1010,
+                    row + 18,
+                    16,
+                    fg,
+                    &format!("{} · {percent:.1}%", group.lines),
+                );
+            }
+        }
+        let contents = svg(1300, bg, &body);
+        write_artifact(output, "ownership.svg", contents.as_bytes())?;
+        current_cards.insert("ownership.svg".to_owned(), contents);
+
+        let mut body = heading("Sampled ownership over time");
+        body += &text(64, 165, 18, muted, "At most 12 selected commits, evenly sampled by commit index; plotted on calendar dates");
+        body += &text(
+            64,
+            192,
+            17,
+            muted,
+            "Each stacked column is one measured snapshot; gaps between samples are unmeasured.",
+        );
+        let colors = [
+            accent,
+            palette.secondary,
+            palette.positive,
+            palette.negative,
+            fg,
+            muted,
+            "#d2a861",
+            "#8ea8ff",
+        ];
+        let mut totals = BTreeMap::<String, u64>::new();
+        for snapshot in &deep.historical_ownership {
+            for part in &snapshot.by_author {
+                if part.author_id != "unknown" {
+                    *totals.entry(part.author_id.clone()).or_default() += part.lines;
+                }
+            }
+        }
+        let mut ranking: Vec<_> = totals.into_iter().collect();
+        ranking.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut selected: Vec<_> = ranking.into_iter().take(8).map(|(id, _)| id).collect();
+        selected.sort();
+        let mut dated = deep
+            .historical_ownership
+            .iter()
+            .map(|snapshot| {
+                NaiveDate::parse_from_str(&snapshot.author_date, "%Y-%m-%d")
+                    .map(|date| (date, snapshot))
+                    .map_err(|e| format!("invalid ownership snapshot date: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        dated.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.sha.cmp(&b.1.sha)));
+        for percent in [100, 50, 0] {
+            let y = 250 + (100 - percent) * 4;
+            body += &format!("<path d=\"M 100 {y} H 1100\" stroke=\"{muted}\" opacity=\"0.35\"/>");
+            body += &text(48, y + 5, 15, muted, &format!("{percent}%"));
+        }
+        if let (Some((first, _)), Some((last, _))) = (dated.first(), dated.last()) {
+            let span = (*last - *first).num_days();
+            for (date, snapshot) in &dated {
+                let x = if span == 0 {
+                    600.0
+                } else {
+                    120.0 + (*date - *first).num_days() as f64 * 960.0 / span as f64
+                };
+                let mut y = 650.0;
+                let mut segments = String::new();
+                let mut breakdown = Vec::new();
+                let mut other = 0_u64;
+                for part in &snapshot.by_author {
+                    if part.author_id != "unknown" && !selected.contains(&part.author_id) {
+                        other += part.lines;
+                    }
+                }
+                for (part_index, id) in selected.iter().enumerate() {
+                    let lines = snapshot
+                        .by_author
+                        .iter()
+                        .find(|part| &part.author_id == id)
+                        .map_or(0, |part| part.lines);
+                    if lines > 0 {
+                        breakdown.push(format!("{id}: {lines} lines"));
+                    }
+                    let height = if snapshot.total_lines == 0 {
+                        0.0
+                    } else {
+                        400.0 * lines as f64 / snapshot.total_lines as f64
+                    };
+                    y -= height;
+                    segments += &rect(x - 18.0, y, 36.0, height, colors[part_index]);
+                }
+                for (lines, color) in [
+                    (other, "#a6a6a6"),
+                    (snapshot.coverage.unknown_lines, "#777777"),
+                ] {
+                    let height = if snapshot.total_lines == 0 {
+                        0.0
+                    } else {
+                        400.0 * lines as f64 / snapshot.total_lines as f64
+                    };
+                    y -= height;
+                    segments += &rect(x - 18.0, y, 36.0, height, color);
+                }
+                if other > 0 {
+                    breakdown.push(format!("Other: {other} lines"));
+                }
+                if snapshot.coverage.unknown_lines > 0 {
+                    breakdown.push(format!(
+                        "unknown: {} lines",
+                        snapshot.coverage.unknown_lines
+                    ));
+                }
+                let detail = format!("{}: {} sampled lines; {}/{} regular files; {} binary skipped; {} submodules skipped; {}{}",
+                    snapshot.author_date, snapshot.total_lines,
+                    snapshot.coverage.analyzed_files, snapshot.coverage.eligible_files,
+                    snapshot.coverage.skipped_binary, snapshot.coverage.skipped_submodules,
+                    breakdown.join(", "),
+                    if snapshot.coverage.truncated { "; partial coverage" } else { "" });
+                body += &format!("<g><title>{}</title>{segments}</g>", escape_xml(&detail));
+                body += &format!("<text transform=\"translate({x:.1},685) rotate(-60)\" font-size=\"14\" fill=\"{muted}\" font-family=\"Lato,system-ui,sans-serif\">{}</text>", escape_xml(&snapshot.author_date));
+            }
+        } else {
+            body += &text(64, 440, 23, fg, "No snapshots within the deep budget");
+        }
+        let mut legend: Vec<_> = selected
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), colors[i]))
+            .collect();
+        if deep.historical_ownership.iter().any(|snapshot| {
+            snapshot
+                .by_author
+                .iter()
+                .any(|part| part.author_id != "unknown" && !selected.contains(&part.author_id))
+        }) {
+            legend.push(("Other", "#a6a6a6"));
+        }
+        if deep
+            .historical_ownership
+            .iter()
+            .any(|snapshot| snapshot.coverage.unknown_lines > 0)
+        {
+            legend.push(("unknown", "#777777"));
+        }
+        for (index, (id, color)) in legend.iter().enumerate() {
+            let col = index / 5;
+            let row = index % 5;
+            let x = 64 + col as u32 * 535;
+            let y = 825 + row as u32 * 35;
+            body += &rect(x as f64, y as f64 - 15.0, 18.0, 18.0, color);
+            body += &text(x + 30, y, 16, fg, &fit_text(id, 420, 16));
+        }
+        body += &text(
+            64,
+            1015,
+            16,
+            muted,
+            &format!(
+                "{} sampled snapshots · {}/{} regular files analyzed · {} unknown lines · {}",
+                deep.historical_ownership.len(),
+                deep.historical_ownership
+                    .iter()
+                    .map(|s| s.coverage.analyzed_files)
+                    .sum::<u64>(),
+                deep.historical_ownership
+                    .iter()
+                    .map(|s| s.coverage.eligible_files)
+                    .sum::<u64>(),
+                deep.historical_ownership
+                    .iter()
+                    .map(|s| s.coverage.unknown_lines)
+                    .sum::<u64>(),
+                if deep.coverage.truncated {
+                    "partial coverage"
+                } else {
+                    "within budget"
+                }
+            ),
+        );
+        let contents = svg(1060, bg, &body);
+        write_artifact(output, "ownership-over-time.svg", contents.as_bytes())?;
+        current_cards.insert("ownership-over-time.svg".to_owned(), contents);
+
         let mut body = heading("Ship of Theseus");
         body += &text(64, 166, 21, muted, "sampled surviving line identities");
         body += &text(

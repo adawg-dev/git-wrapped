@@ -52,6 +52,9 @@ git-wrapped-report/
 ├── contributors.svg
 ├── activity.svg
 ├── activity-heatmap.svg
+├── ownership.svg                 # with --deep
+├── ownership-over-time.svg       # with --deep
+├── ship-of-theseus.svg           # with --deep
 ├── contributors/<stable-id>.svg
 ├── awards/
 │   ├── commit-machine.svg
@@ -80,6 +83,8 @@ Long scans show coarse progress on stderr when stderr is a terminal; `--verbose`
 - **Contributor tenure and overlap:** Tenure spans first to last selected author date; a return means a selected commit after at least 90 days without one. Overlap counts calendar weeks when both contributors committed, among the top 20 by commits. It does not establish direct collaboration, review, employment, or team membership.
 - **Commit concentration proxy:** JSON's `bus_factor_proxy` is the smallest number of normalized contributors whose commits cover at least half the selected commits. It describes commit concentration, not the actual bus factor or project resilience.
 - **Growth and release timing:** Monthly net growth is additions minus deletions, not current lines of code. Churn is additions plus deletions. Release intervals use reachable tags on distinct target commits and are descriptive; tags do not add commits.
+- **Deep ownership (`--deep`):** `ownership.svg` counts surviving regular text lines in HEAD by normalized contributor, immediate directory, and extension. Date and author selectors do not restrict this current snapshot; path exclusions do. The chart shows analyzed/eligible file counts, unknown lines, skipped binary files and submodules, and partial coverage when the shared deep budget ends.
+- **Sampled ownership history (`--deep`):** `ownership-over-time.svg` shows up to 12 selected commits evenly spaced by commit index and placed at their actual selected-timezone calendar dates. Every stacked column is a sampled snapshot; dates between columns are unmeasured. Each snapshot's JSON coverage records eligible/analyzed files, skipped files, unknown lines, and truncation. Charts show the top eight normalized contributor IDs and group the rest as Other; unknown lines remain separate. The shared file, line, and time budgets can truncate this history. Git blame origin attribution is an estimate of surviving line ownership, not exact authorship across rewrites or renames.
 
 Git's `.mailmap` is applied before aliases from `.git-wrapped.json`. The config can also set a timezone and opt-in path exclusions:
 
