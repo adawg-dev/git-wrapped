@@ -55,6 +55,8 @@ git-wrapped-report/
 ├── ownership.svg                 # with --deep
 ├── ownership-over-time.svg       # with --deep
 ├── ship-of-theseus.svg           # with --deep
+├── contributor-interactions.svg  # with --deep
+├── file-coupling.svg             # with --deep
 ├── contributors/<stable-id>.svg
 ├── awards/
 │   ├── commit-machine.svg
@@ -85,6 +87,9 @@ Long scans show coarse progress on stderr when stderr is a terminal; `--verbose`
 - **Growth and release timing:** Monthly net growth is additions minus deletions, not current lines of code. Churn is additions plus deletions. Release intervals use reachable tags on distinct target commits and are descriptive; tags do not add commits.
 - **Deep ownership (`--deep`):** `ownership.svg` counts surviving regular text lines in HEAD by normalized contributor, immediate directory, and extension. Date and author selectors do not restrict this current snapshot; path exclusions do. The chart shows analyzed/eligible file counts, unknown lines, skipped binary files and submodules, and partial coverage when the shared deep budget ends.
 - **Sampled ownership history (`--deep`):** `ownership-over-time.svg` shows up to 12 selected commits evenly spaced by commit index and placed at their actual selected-timezone calendar dates. Every stacked column is a sampled snapshot; dates between columns are unmeasured. Each snapshot's JSON coverage records eligible/analyzed files, skipped files, unknown lines, and truncation. Charts show the top eight normalized contributor IDs and group the rest as Other; unknown lines remain separate. The shared file, line, and time budgets can truncate this history. Git blame origin attribution is an estimate of surviving line ownership, not exact authorship across rewrites or renames.
+- **Deleted-line interactions (`--deep`):** `contributor-interactions.svg` is a top-10 matrix of nonblank lines removed by one normalized contributor (row) that were originally authored by another or the same contributor (column). Each selected non-merge commit with one parent and text deletions is compared with its first parent using `git diff --unified=0`; the parent revision of each changed path is blamed once to find the removed lines' origins. Merge commits are excluded, so a line is counted once, and same-author removals stay on the diagonal. At most 10,000 deletion-bearing commits are examined, newest first, within the shared deep time budget; JSON's `interaction_commits_examined` and `interaction_commits_skipped` record coverage, and any skip marks the run partial. Removing lines is neutral maintenance activity, not a judgment of either author.
+- **File coupling (`--deep`):** `file-coupling.svg` lists the top 10 path pairs by the number of distinct selected commits that changed both paths. Only commits with 2–50 changed paths (after exclusions) count, and only the 200 files with the most revisions form pairs; JSON keeps the top 200 pairs and records `coupling_commits_examined` and `coupling_commits_skipped` (commits with more than 50 paths). Co-change is not a causal or architectural dependency.
+- **Deep awards (`--deep`):** Ancient Code Guardian (author of the oldest attributed line at HEAD), Most Frequently Blamed (most current attributed lines), and Cross-Author Cleanup (most measured removed lines originally authored by someone else) appear only when the deep pass finished within budget and the value is positive. Ties go to the lower normalized contributor ID; unknown lines never win.
 
 Git's `.mailmap` is applied before aliases from `.git-wrapped.json`. The config can also set a timezone and opt-in path exclusions:
 
@@ -108,4 +113,4 @@ Shallow clones still work, but a warning says historical totals cover **availabl
 
 ## Scope
 
-The current release produces SVG, PNG, JSON, and focused terminal views. Ownership, surviving LOC, a terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.
+The current release produces SVG, PNG, JSON, and focused terminal views; `--deep` adds sampled blame-based ownership, survival, deleted-line interactions, and file coupling. A terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.

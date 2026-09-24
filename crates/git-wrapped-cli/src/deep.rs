@@ -1,5 +1,6 @@
 mod blame;
 mod history;
+mod interactions;
 
 type TreeEntry = (Vec<u8>, Vec<u8>, Vec<u8>); // mode, object ID, raw path
 
@@ -197,6 +198,7 @@ pub fn analyze_deep_with_cancel(
         .count() as u64;
     let mut counted_lines = 0_u64;
     let mut head_lines = Vec::new();
+    let mut oldest: Option<(i64, String, Option<String>)> = None;
     for (mode, oid, path) in entries {
         cancel.check()?;
         if start.elapsed() >= deadline {
@@ -252,6 +254,14 @@ pub fn analyze_deep_with_cancel(
                 deep.coverage.unknown_lines += 1;
             } else {
                 deep.coverage.attributed_lines += 1;
+                if let Some(time) = line.author_time {
+                    if oldest
+                        .as_ref()
+                        .is_none_or(|(t, old_id, _)| (time, &id) < (*t, old_id))
+                    {
+                        oldest = Some((time, id.clone(), line.author_tz.clone()));
+                    }
+                }
             }
             *by_author.entry(id.clone()).or_default() += 1;
             *by_directory
@@ -295,9 +305,27 @@ pub fn analyze_deep_with_cancel(
         &head_lines,
     )?;
     deep.code_age = code_age;
+    if let Some((time, id, tz)) = oldest {
+        let timezone = data.repository.timezone.parse::<TimezoneChoice>()?;
+        deep.code_age.oldest_line_date = history::selected_time(time, tz.as_deref(), timezone)
+            .map(|date| date.date_naive().to_string());
+        deep.code_age.oldest_line_author_id = Some(id);
+    }
     deep.survival = survival;
     deep.historical_ownership = historical_ownership;
     deep.coverage.truncated |= truncated_history;
+    let (interactions, coupling) = interactions::analyze(
+        repo,
+        config,
+        data,
+        &excluded,
+        limits.max_lines,
+        start.checked_add(deadline),
+        cancel,
+        &mut deep.coverage,
+    )?;
+    deep.interactions = interactions;
+    deep.coupling = coupling;
     cancel.check()?;
     if start.elapsed() >= deadline {
         deep.coverage.truncated = true;
@@ -321,5 +349,7 @@ pub fn analyze_deep_with_cancel(
     cancel.check()?;
     data.tree_samples = samples;
     data.deep = Some(deep);
+    let awards = crate::awards::select_deep_awards(data);
+    data.awards.extend(awards);
     Ok(())
 }

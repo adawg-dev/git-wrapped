@@ -176,6 +176,83 @@ pub fn select_awards(data: &RepositoryAnalytics) -> Vec<Award> {
     awards
 }
 
+/// Deep-only awards; omitted unless the deep pass finished within budget.
+pub fn select_deep_awards(data: &RepositoryAnalytics) -> Vec<Award> {
+    let Some(deep) = data.deep.as_ref().filter(|deep| !deep.coverage.truncated) else {
+        return Vec::new();
+    };
+    let deep_award =
+        |slug: &str, title: &str, id: &str, metric: &str, value: String, explanation: &str| Award {
+            slug: slug.into(),
+            title: title.into(),
+            winner_id: id.into(),
+            winner: data
+                .contributors
+                .iter()
+                .find(|c| c.id == id)
+                .map_or_else(|| id.to_owned(), |c| c.name.clone()),
+            metric: metric.into(),
+            value,
+            explanation: explanation.into(),
+        };
+    let mut awards = Vec::new();
+    if let (Some(id), Some(date)) = (
+        &deep.code_age.oldest_line_author_id,
+        &deep.code_age.oldest_line_date,
+    ) {
+        awards.push(deep_award(
+            "ancient-code-guardian",
+            "Ancient Code Guardian",
+            id,
+            "oldest surviving line authored",
+            date.clone(),
+            "Authored the oldest current HEAD text line attributed by Git blame.",
+        ));
+    }
+    if let Some(top) = deep
+        .ownership
+        .iter()
+        .filter(|slice| slice.author_id != "unknown" && slice.lines > 0)
+        .max_by(|a, b| {
+            a.lines
+                .cmp(&b.lines)
+                .then_with(|| b.author_id.cmp(&a.author_id))
+        })
+    {
+        awards.push(deep_award(
+            "most-frequently-blamed",
+            "Most Frequently Blamed",
+            &top.author_id,
+            "current lines attributed",
+            top.lines.to_string(),
+            "Most current HEAD nonblank text lines attributed by Git blame.",
+        ));
+    }
+    let mut cleanup = std::collections::BTreeMap::<&str, u64>::new();
+    for cell in &deep.interactions {
+        if cell.original_author_id != "unknown"
+            && cell.original_author_id != cell.deleting_author_id
+        {
+            *cleanup.entry(&cell.deleting_author_id).or_default() += cell.deleted_lines;
+        }
+    }
+    if let Some((id, lines)) = cleanup
+        .into_iter()
+        .filter(|(_, lines)| *lines > 0)
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+    {
+        awards.push(deep_award(
+            "cross-author-cleanup",
+            "Cross-Author Cleanup",
+            id,
+            "removed lines authored by others",
+            lines.to_string(),
+            "Most measured removed lines originally authored by someone else; line removal is neutral maintenance activity.",
+        ));
+    }
+    awards
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -38,7 +38,7 @@ fn origins(lines: &[blame::BlamedLine]) -> HashSet<Origin> {
         .collect()
 }
 
-fn selected_time(
+pub(super) fn selected_time(
     time: i64,
     offset: Option<&str>,
     timezone: TimezoneChoice,
@@ -124,6 +124,7 @@ fn code_age(
                 surviving_lines,
             })
             .collect(),
+        ..Default::default()
     }
 }
 

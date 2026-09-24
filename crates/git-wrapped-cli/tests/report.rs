@@ -151,6 +151,170 @@ fn sampled_ownership_chart_groups_authors_beyond_eight() {
 }
 
 #[test]
+fn interaction_counts_original_author_of_removed_line() {
+    let f = Fixture::new();
+    f.commit("a", b"alice\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("a", b"", "b@x", "2024-01-02T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let deep = data.deep.unwrap();
+    assert!(deep
+        .interactions
+        .iter()
+        .any(|x| x.deleting_author_id == "b@x"
+            && x.original_author_id == "a@x"
+            && x.deleted_lines == 1));
+    assert_eq!(deep.coverage.interaction_commits_examined, 1);
+    assert_eq!(deep.coverage.interaction_commits_skipped, 0);
+}
+
+#[test]
+fn interactions_exclude_merges_and_count_same_author_deletions_once() {
+    let f = Fixture::new();
+    f.commit("a", b"x\ny\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("s", b"s1\ns2\n", "a@x", "2024-01-02T10:00:00 +0000");
+    assert!(f.git(&["branch", "side"]).status.success());
+    f.commit("s", b"s1\n", "a@x", "2024-01-03T10:00:00 +0000");
+    assert!(f.git(&["checkout", "-q", "side"]).status.success());
+    f.commit("a", b"y\n", "b@x", "2024-01-04T10:00:00 +0000");
+    assert!(f.git(&["checkout", "-q", "master"]).status.success());
+    authored_commit(
+        &f,
+        "a@x",
+        "2024-01-05T10:00:00 +0000",
+        &["merge", "--no-ff", "-qm", "merge", "side"],
+    );
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let deep = data.deep.unwrap();
+    let cells: Vec<_> = deep
+        .interactions
+        .iter()
+        .map(|x| {
+            (
+                x.deleting_author_id.as_str(),
+                x.original_author_id.as_str(),
+                x.deleted_lines,
+            )
+        })
+        .collect();
+    assert_eq!(cells, [("a@x", "a@x", 1), ("b@x", "a@x", 1)]);
+    assert_eq!(deep.coverage.interaction_commits_examined, 2);
+    assert_eq!(deep.coverage.interaction_commits_skipped, 0);
+}
+
+#[test]
+fn coupling_counts_distinct_commits_and_skips_wide_changes() {
+    let f = Fixture::new();
+    fs::write(f.dir.path().join("p1"), "1\n").unwrap();
+    f.commit("p2", b"1\n", "a@x", "2024-01-01T10:00:00 +0000");
+    fs::write(f.dir.path().join("p1"), "2\n").unwrap();
+    f.commit("p2", b"2\n", "a@x", "2024-01-02T10:00:00 +0000");
+    for i in 0..49 {
+        fs::write(f.dir.path().join(format!("w{i}")), "w\n").unwrap();
+    }
+    fs::write(f.dir.path().join("p1"), "3\n").unwrap();
+    f.commit("p2", b"3\n", "a@x", "2024-01-03T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let deep = data.deep.as_ref().unwrap();
+    let (p1, p2) = ("7031", "7032"); // byte-hex path IDs
+    assert_eq!(deep.coupling.len(), 1);
+    assert_eq!(
+        (
+            deep.coupling[0].first_path_id.as_str(),
+            deep.coupling[0].second_path_id.as_str(),
+            deep.coupling[0].cochange_commits
+        ),
+        (p1, p2, 2)
+    );
+    assert_eq!(deep.coverage.coupling_commits_examined, 2);
+    assert_eq!(deep.coverage.coupling_commits_skipped, 1);
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("file-coupling.svg")).unwrap();
+    assert!(svg.contains("p1") && svg.contains("p2") && svg.contains("2 commits"));
+    assert!(svg.contains("1 commits with more than 50 paths skipped"));
+    assert!(svg.contains("not causation"));
+}
+
+#[test]
+fn deep_awards_and_interaction_charts_need_complete_coverage() {
+    let f = Fixture::new();
+    f.commit("a", b"old\nkeep\n", "a@x", "2020-01-01T10:00:00 +0000");
+    f.commit(
+        "a",
+        b"keep\nnew1\nnew2\n",
+        "b@x",
+        "2024-01-01T10:00:00 +0000",
+    );
+    let repo = discover(f.dir.path()).unwrap();
+    let mut shallow = analyze(&repo, &Config::default()).unwrap();
+    let mut data = shallow.clone();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    for (slug, winner, value) in [
+        ("ancient-code-guardian", "a@x", "2020-01-01"),
+        ("most-frequently-blamed", "b@x", "2"),
+        ("cross-author-cleanup", "b@x", "1"),
+    ] {
+        let award = data.awards.iter().find(|a| a.slug == slug).unwrap();
+        assert_eq!(
+            (award.winner_id.as_str(), award.value.as_str()),
+            (winner, value)
+        );
+    }
+    assert!(data
+        .awards
+        .iter()
+        .find(|a| a.slug == "cross-author-cleanup")
+        .unwrap()
+        .explanation
+        .contains("neutral"));
+    let out = tempdir();
+    git_wrapped::render::render_report(&data, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    let svg = fs::read_to_string(out.path().join("contributor-interactions.svg")).unwrap();
+    assert!(svg.contains("Lines removed by") && svg.contains("originally authored by"));
+    assert!(svg.contains("1 deletion-bearing commits examined · 0 skipped"));
+    assert!(out.path().join("awards/cross-author-cleanup.svg").exists());
+    git_wrapped::render::render_report(&shallow, out.path(), git_wrapped::render::Theme::Dark)
+        .unwrap();
+    for name in [
+        "contributor-interactions.svg",
+        "file-coupling.svg",
+        "awards/cross-author-cleanup.svg",
+    ] {
+        assert!(!out.path().join(name).exists(), "{name}");
+    }
+
+    git_wrapped::deep::analyze_deep(
+        &repo,
+        &Config::default(),
+        &mut shallow,
+        git_wrapped::deep::DeepLimits {
+            max_files: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(shallow.deep.as_ref().unwrap().coverage.truncated);
+    assert!(!shallow.awards.iter().any(|a| [
+        "ancient-code-guardian",
+        "most-frequently-blamed",
+        "cross-author-cleanup"
+    ]
+    .contains(&a.slug.as_str())));
+}
+
+#[test]
 fn deep_survival_tracks_two_eras_and_writes_only_in_deep_reports() {
     let f = Fixture::new();
     f.commit("a", b"old\nkeep\n", "a@x", "2020-01-01T10:00:00 +0000");

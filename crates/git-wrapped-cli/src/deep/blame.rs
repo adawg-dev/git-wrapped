@@ -17,6 +17,7 @@ use std::{
 pub(crate) struct BlamedLine {
     pub sha: String,
     pub original_line: u64,
+    pub final_line: u64,
     pub filename: Vec<u8>,
     pub author: Option<Identity>,
     pub author_time: Option<i64>,
@@ -150,7 +151,7 @@ fn read_record(
     }
 }
 
-fn parse_header(record: &[u8]) -> Option<(String, u64, bool)> {
+fn parse_header(record: &[u8]) -> Option<(String, u64, u64, bool)> {
     let mut fields = record.split(|&b| b == b' ');
     let token = fields.next()?;
     let boundary = token.first() == Some(&b'^');
@@ -158,10 +159,14 @@ fn parse_header(record: &[u8]) -> Option<(String, u64, bool)> {
     if !matches!(sha.len(), 40 | 64) || !sha.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
-    let original = fields.next()?;
-    fields.next()?; // final line number
-    let original = std::str::from_utf8(original).ok()?.parse().ok()?;
-    Some((String::from_utf8(sha.to_vec()).ok()?, original, boundary))
+    let original = std::str::from_utf8(fields.next()?).ok()?.parse().ok()?;
+    let final_line = std::str::from_utf8(fields.next()?).ok()?.parse().ok()?;
+    Some((
+        String::from_utf8(sha.to_vec()).ok()?,
+        original,
+        final_line,
+        boundary,
+    ))
 }
 
 enum ChildOutcome {
@@ -220,6 +225,7 @@ fn blame_command_with_cancel(
     let mut lines = Vec::new();
     let mut sha = String::new();
     let mut original_line = 0;
+    let mut final_line = 0;
     let mut name = String::new();
     let mut email = String::new();
     let mut author_time = None;
@@ -257,6 +263,7 @@ fn blame_command_with_cancel(
                     lines.push(BlamedLine {
                         sha: sha.clone(),
                         original_line,
+                        final_line,
                         filename: filename.clone(),
                         author,
                         author_time,
@@ -265,9 +272,12 @@ fn blame_command_with_cancel(
                 }
                 continue;
             }
-            if let Some((parsed_sha, parsed_line, parsed_boundary)) = parse_header(record) {
+            if let Some((parsed_sha, parsed_line, parsed_final, parsed_boundary)) =
+                parse_header(record)
+            {
                 sha = parsed_sha;
                 original_line = parsed_line;
+                final_line = parsed_final;
                 name.clear();
                 email.clear();
                 author_time = None;
@@ -421,11 +431,11 @@ mod tests {
             let header = format!("{} 12 1 1", "a".repeat(width));
             assert_eq!(
                 parse_header(header.as_bytes()),
-                Some(("a".repeat(width), 12, false))
+                Some(("a".repeat(width), 12, 1, false))
             );
             assert_eq!(
                 parse_header(format!("^{header}").as_bytes()),
-                Some(("a".repeat(width), 12, true))
+                Some(("a".repeat(width), 12, 1, true))
             );
         }
         assert_eq!(parse_header(b"short 12 1 1"), None);

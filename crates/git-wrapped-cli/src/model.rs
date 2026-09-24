@@ -215,6 +215,8 @@ pub struct CodeAge {
     pub oldest_days: Option<i64>,
     pub future_dated_lines: u64,
     pub year_cohorts: Vec<YearCohort>,
+    pub oldest_line_author_id: Option<String>,
+    pub oldest_line_date: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -228,6 +230,8 @@ pub struct DeepCoverage {
     pub truncated: bool,
     pub interaction_commits_examined: u64,
     pub interaction_commits_skipped: u64,
+    pub coupling_commits_examined: u64,
+    pub coupling_commits_skipped: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -125,7 +125,11 @@ const MAX_CARD_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 fn valid_card_name(name: &str) -> bool {
     if matches!(
         name,
-        "ship-of-theseus.svg" | "ownership.svg" | "ownership-over-time.svg"
+        "ship-of-theseus.svg"
+            | "ownership.svg"
+            | "ownership-over-time.svg"
+            | "contributor-interactions.svg"
+            | "file-coupling.svg"
     ) {
         return true;
     }
@@ -1305,6 +1309,164 @@ pub fn render_report_with_options(
         let contents = svg(800, bg, &body);
         write_artifact(output, "ship-of-theseus.svg", contents.as_bytes())?;
         current_cards.insert("ship-of-theseus.svg".to_owned(), contents);
+
+        let mut body = heading("Lines removed by / originally authored by");
+        body += &text(64, 165, 18, muted, "Nonblank lines removed in first-parent diffs of selected non-merge commits, by parent-revision blame");
+        let mut involvement = BTreeMap::<&str, u64>::new();
+        for cell in &deep.interactions {
+            *involvement.entry(&cell.deleting_author_id).or_default() += cell.deleted_lines;
+            *involvement.entry(&cell.original_author_id).or_default() += cell.deleted_lines;
+        }
+        let mut people: Vec<_> = involvement.into_iter().collect();
+        people.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let total_people = people.len();
+        let mut people: Vec<_> = people.into_iter().take(10).map(|(id, _)| id).collect();
+        people.sort_unstable();
+        let max = deep
+            .interactions
+            .iter()
+            .map(|cell| cell.deleted_lines)
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
+        body += &text(
+            64,
+            215,
+            16,
+            muted,
+            "Rows: lines removed by · columns: originally authored by",
+        );
+        for (column, id) in people.iter().enumerate() {
+            let x = 330 + column as u32 * 82 + 40;
+            body += &format!("<text transform=\"translate({x},370) rotate(-45)\" font-size=\"14\" fill=\"{fg}\" font-family=\"Lato,system-ui,sans-serif\">{}</text>", escape_xml(&fit_text(id, 238, 14)));
+        }
+        for (row, deleting) in people.iter().enumerate() {
+            let y = 390 + row as u32 * 40;
+            body += &text(64, y + 26, 16, fg, &fit_text(deleting, 250, 16));
+            for (column, original) in people.iter().enumerate() {
+                let x = 330 + column as u32 * 82;
+                let lines = deep
+                    .interactions
+                    .iter()
+                    .find(|cell| {
+                        cell.deleting_author_id == *deleting && cell.original_author_id == *original
+                    })
+                    .map_or(0, |cell| cell.deleted_lines);
+                if lines == 0 {
+                    body += &rect(x as f64, y as f64, 78.0, 36.0, empty);
+                } else {
+                    body += &format!(
+                        "<g opacity=\"{:.2}\"><title>{}</title>{}</g>",
+                        0.35 + lines as f64 / max * 0.65,
+                        escape_xml(&format!(
+                            "{deleting} removed {lines} lines originally authored by {original}"
+                        )),
+                        rect(x as f64, y as f64, 78.0, 36.0, accent)
+                    );
+                    body += &text(x + 8, y + 24, 15, fg, &lines.to_string());
+                }
+            }
+        }
+        if people.is_empty() {
+            body += &text(64, 420, 23, fg, "No measured removed lines");
+        }
+        body += &text(
+            64,
+            825,
+            16,
+            muted,
+            &format!(
+                "Top {} of {total_people} contributors by lines removed or authored · unit: removed nonblank lines · merges excluded",
+                people.len()
+            ),
+        );
+        body += &text(
+            64,
+            855,
+            16,
+            muted,
+            &format!(
+                "{} deletion-bearing commits examined · {} skipped{}",
+                deep.coverage.interaction_commits_examined,
+                deep.coverage.interaction_commits_skipped,
+                if deep.coverage.interaction_commits_skipped > 0 {
+                    " · partial coverage"
+                } else {
+                    ""
+                }
+            ),
+        );
+        let contents = svg(900, bg, &body);
+        write_artifact(output, "contributor-interactions.svg", contents.as_bytes())?;
+        current_cards.insert("contributor-interactions.svg".to_owned(), contents);
+
+        let mut body = heading("Files that change together");
+        body += &text(
+            64,
+            165,
+            18,
+            muted,
+            "Distinct selected commits changing both paths; co-change, not causation",
+        );
+        let names: BTreeMap<&str, &str> = data
+            .files
+            .iter()
+            .map(|file| (file.path_id.as_str(), file.display_path.as_str()))
+            .collect();
+        let name = |id: &str| names.get(id).copied().unwrap_or(id).to_owned();
+        for (i, pair) in deep.coupling.iter().take(10).enumerate() {
+            let y = 212 + i as u32 * 58;
+            let suffix = format!(" · {} commits", pair.cochange_commits);
+            body += &text(
+                64,
+                y,
+                16,
+                fg,
+                &format!(
+                    "{}. {}",
+                    i + 1,
+                    fit_text(&name(&pair.first_path_id), 1000, 16)
+                ),
+            );
+            let room = 1000_u32.saturating_sub(suffix.chars().count() as u32 * 16);
+            body += &text(
+                100,
+                y + 24,
+                16,
+                fg,
+                &format!(
+                    "+ {}{suffix}",
+                    fit_text(&name(&pair.second_path_id), room, 16)
+                ),
+            );
+        }
+        if deep.coupling.is_empty() {
+            body += &text(64, 245, 20, muted, "No file pairs changed together");
+        }
+        body += &text(
+            64,
+            795,
+            16,
+            muted,
+            &format!(
+                "Top {} of {} pairs · commits with 2–50 changed paths · top 200 files by revisions",
+                deep.coupling.len().min(10),
+                deep.coupling.len()
+            ),
+        );
+        body += &text(
+            64,
+            825,
+            16,
+            muted,
+            &format!(
+                "{} commits counted · {} commits with more than 50 paths skipped",
+                deep.coverage.coupling_commits_examined, deep.coverage.coupling_commits_skipped
+            ),
+        );
+        let contents = svg(860, bg, &body);
+        write_artifact(output, "file-coupling.svg", contents.as_bytes())?;
+        current_cards.insert("file-coupling.svg".to_owned(), contents);
     }
 
     let mut body = heading("The people behind the commits");
