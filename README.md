@@ -37,6 +37,24 @@ git-wrapped animate [PATH] [--format gif|mp4] [--output FILE] [--theme dark|ligh
 
 `PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Reports write `summary.png` at 2400×3200 by default; `--no-png` skips PNG generation (an earlier PNG in the same output directory is left alone). Export writes JSON to stdout; report commands write files and print a short summary. Focused commands print text, with up to 20 rows per list. `contributors` defaults to commits; `top` is a shortcut for its five named rankings, including `top files` for contributors by distinct files touched. `contributor` accepts an exact ID or a unique case-insensitive display name. `activity` defaults to month and shows the latest 20 periods. `archaeology` ranks changed paths by historical churn and marks paths absent from HEAD as historical. Global `--exclude PATTERN` may repeat before or after a subcommand. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
 
+## Terminal explorer
+
+```sh
+git-wrapped explore [--deep] [PATH]
+```
+
+`explore` analyzes the repository once, then opens a keyboard-driven terminal view of the same data used by the JSON and SVG report. It needs an interactive terminal on both stdin and stdout; otherwise it exits with an error before scanning. The global selection flags (`--since`, `--until`, `--author`, `--exclude`, `--timezone`, `--no-merges`) apply as they do for reports. `--deep` runs the same current-ownership, sampled survival, and interaction analysis as `report --deep` before the explorer opens and uses the same cache; without it the Ownership, Survival, and Interactions pages say to run `explore --deep`.
+
+Pages: Overview, Contributors, Activity, Files, Awards, Ownership, Survival, and Interactions. Repository text is shown with control characters replaced by spaces. Terminals smaller than 40×12 show a resize message; narrow terminals show fewer table columns.
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `→`, `Shift+Tab` / `←` | Next / previous page |
+| `↑` / `↓` | Move the selected row |
+| `s` | Cycle the contributor sort: commits, additions, deletions, churn, active days, files (the selected contributor stays selected) |
+| `Enter` / `Esc` | Open / close the selected contributor's details |
+| `q`, `Ctrl+C` | Quit and restore the terminal |
+
 ## Report files
 
 ```text

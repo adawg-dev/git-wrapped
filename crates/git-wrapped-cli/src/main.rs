@@ -114,6 +114,11 @@ enum CommandArg {
         hide_filenames: bool,
         repository: Option<PathBuf>,
     },
+    Explore {
+        #[arg(long)]
+        deep: bool,
+        repository: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -201,6 +206,7 @@ enum View {
     Archaeology,
     Awards,
     Ownership,
+    Explore,
 }
 
 fn safe(value: &str) -> String {
@@ -407,6 +413,7 @@ fn print_view(data: &RepositoryAnalytics, view: View, out: &mut impl Write) -> R
             )
             .map_err(|e| e.to_string())?;
         }
+        View::Explore => git_wrapped::tui::explore(data)?,
         View::Ownership => {
             let deep = data.deep.as_ref().ok_or("ownership requires --deep")?;
             writeln!(
@@ -533,6 +540,15 @@ fn run(cli: Cli) -> Result<(), String> {
             None,
             false,
         ),
+        Some(CommandArg::Explore { repository, deep }) => {
+            git_wrapped::tui::require_terminal()?;
+            (
+                repository.unwrap_or_else(|| PathBuf::from(".")),
+                false,
+                Some(View::Explore),
+                deep,
+            )
+        }
     };
     let repo = discover(&repository)?;
     let config = Config::load(&repo.root)?;
@@ -624,13 +640,13 @@ fn run(cli: Cli) -> Result<(), String> {
             .write_all(b"\n")
             .map_err(|e| format!("write JSON: {e}"))?;
     } else if let Some(view) = view {
-        let stdout = io::stdout();
-        print_view(&data, view, &mut stdout.lock())?;
         if let Some(key) = key.as_ref().filter(|_| !cache_hit) {
             if let Err(error) = cache::save(&cache_path, key, &data) {
                 eprintln!("Warning: could not save analysis cache: {}", safe(&error));
             }
         }
+        let stdout = io::stdout();
+        print_view(&data, view, &mut stdout.lock())?;
     } else {
         progress.phase("Writing report", None, None);
         render_report_with_options(&data, &output, theme, !cli.no_png)?;

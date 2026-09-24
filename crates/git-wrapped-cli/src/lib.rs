@@ -8,3 +8,4 @@ pub mod model;
 pub mod motion;
 pub mod progress;
 pub mod render;
+pub mod tui;

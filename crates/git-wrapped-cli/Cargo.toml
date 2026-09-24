@@ -14,6 +14,7 @@ resvg = { version = "=0.48.1", default-features = false, features = ["text"] }
 globset = "0.4.20"
 ctrlc = "3.5.2"
 image = { version = "0.25", default-features = false, features = ["gif"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 tempfile = "3"
