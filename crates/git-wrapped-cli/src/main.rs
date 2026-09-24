@@ -100,6 +100,9 @@ enum CommandArg {
         metric: TopMetric,
         repository: Option<PathBuf>,
     },
+    Explore {
+        repository: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -181,6 +184,7 @@ enum View {
     Archaeology,
     Awards,
     Ownership,
+    Explore,
 }
 
 fn safe(value: &str) -> String {
@@ -387,6 +391,7 @@ fn print_view(data: &RepositoryAnalytics, view: View, out: &mut impl Write) -> R
             )
             .map_err(|e| e.to_string())?;
         }
+        View::Explore => git_wrapped::tui::explore(data)?,
         View::Ownership => {
             let deep = data.deep.as_ref().ok_or("ownership requires --deep")?;
             writeln!(
@@ -487,6 +492,15 @@ fn run(cli: Cli) -> Result<(), String> {
             Some(View::Contributors(metric.into())),
             false,
         ),
+        Some(CommandArg::Explore { repository }) => {
+            git_wrapped::tui::require_terminal()?;
+            (
+                repository.unwrap_or_else(|| PathBuf::from(".")),
+                false,
+                Some(View::Explore),
+                false,
+            )
+        }
     };
     let repo = discover(&repository)?;
     let config = Config::load(&repo.root)?;
