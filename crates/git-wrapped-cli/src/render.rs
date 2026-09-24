@@ -78,7 +78,7 @@ fn short(value: &str, limit: usize) -> String {
 }
 
 // One em per Unicode scalar is conservative for system-ui, including wide capitals.
-fn fit_text(value: &str, width: u32, size: u32) -> String {
+pub(crate) fn fit_text(value: &str, width: u32, size: u32) -> String {
     let max_chars = (width / size).max(1) as usize;
     if value.chars().count() <= max_chars {
         value.to_owned()
@@ -205,7 +205,7 @@ fn remove_stale_card(output: &Path, name: &str, expected: &str) -> Result<(), St
     Ok(())
 }
 
-fn svg(height: u32, background: &str, body: &str) -> String {
+pub(crate) fn svg(height: u32, background: &str, body: &str) -> String {
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"{height}\" viewBox=\"0 0 1200 {height}\"><rect width=\"100%\" height=\"100%\" fill=\"{background}\"/>{body}</svg>\n")
 }
 

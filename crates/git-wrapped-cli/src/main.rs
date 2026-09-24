@@ -7,7 +7,8 @@ use git_wrapped::{
     cache,
     config::Config,
     deep::{analyze_deep_with_cancel, DeepLimits},
-    git::discover,
+    external,
+    git::{discover, Repository},
     model::RepositoryAnalytics,
     motion::{write_gif_with_cancel, write_mp4_with_cancel, GourceOptions},
     progress::{CancelFlag, Progress},
@@ -16,7 +17,7 @@ use git_wrapped::{
 use std::{
     collections::BTreeMap,
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -119,12 +120,37 @@ enum CommandArg {
         deep: bool,
         repository: Option<PathBuf>,
     },
+    /// Optional third-party companion tools
+    External {
+        #[command(subcommand)]
+        action: ExternalAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExternalAction {
+    /// List optional companion tools without running any analysis
+    List,
+    /// Run one optional companion and store its output under OUTPUT/external/
+    Run {
+        tool: Companion,
+        repository: Option<PathBuf>,
+        /// Also show Git Wrapped current HEAD ownership beside the external result
+        #[arg(long)]
+        deep: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
 enum AnimateFormat {
     Gif,
     Mp4,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Companion {
+    GitFame,
+    GitOfTheseus,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -443,14 +469,136 @@ fn print_view(data: &RepositoryAnalytics, view: View, out: &mut impl Write) -> R
     Ok(())
 }
 
-fn run(cli: Cli) -> Result<(), String> {
+fn theme(cli: &Cli) -> Theme {
+    match cli.theme {
+        ThemeArg::Dark => Theme::Dark,
+        ThemeArg::Light => Theme::Light,
+    }
+}
+
+fn report_dir(cli: &Cli) -> PathBuf {
+    cli.output
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("git-wrapped-report"))
+}
+
+fn analysis_options(
+    cli: &Cli,
+    config: &Config,
+    repo: &Repository,
+) -> Result<AnalysisOptions, String> {
+    let timezone = match cli.timezone {
+        Some(zone) => zone,
+        None => config
+            .timezone
+            .as_deref()
+            .map(str::parse::<TimezoneChoice>)
+            .transpose()
+            .map_err(|error| format!("{}: {error}", repo.root.join(".git-wrapped.json").display()))?
+            .unwrap_or_default(),
+    };
+    Ok(AnalysisOptions {
+        since: cli.since,
+        until: cli.until,
+        author_ids: cli.author.clone(),
+        exclusions: config
+            .exclude
+            .iter()
+            .chain(cli.exclude.iter())
+            .cloned()
+            .collect(),
+        timezone,
+        include_merges: !cli.no_merges,
+    })
+}
+
+fn run_external(
+    cli: &Cli,
+    action: &ExternalAction,
+    cancel: &CancelFlag,
+    progress: &Progress,
+) -> Result<(), String> {
+    match action {
+        ExternalAction::List => {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            writeln!(out, "tool\tstatus\tversion\tintegration").map_err(|e| e.to_string())?;
+            for tool in external::discover_tools() {
+                writeln!(
+                    out,
+                    "{}\t{}\t{}\t{}",
+                    tool.id,
+                    if tool.installed {
+                        "installed"
+                    } else {
+                        "missing"
+                    },
+                    match (&tool.version, tool.installed) {
+                        (Some(version), _) => safe(version),
+                        (None, true) => "unknown".into(),
+                        (None, false) => "-".into(),
+                    },
+                    tool.integration
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        ExternalAction::Run {
+            tool,
+            repository,
+            deep,
+        } => {
+            let output = report_dir(cli);
+            let (name, dir) = match tool {
+                Companion::GitFame => ("git-fame", "git-fame"),
+                Companion::GitOfTheseus => ("git-of-theseus-analyze", "git-of-theseus"),
+            };
+            if *deep && matches!(tool, Companion::GitOfTheseus) {
+                return Err("--deep applies only to git-fame".into());
+            }
+            let executable = external::require(name)?;
+            let repo = discover(repository.as_deref().unwrap_or(Path::new(".")))?;
+            let data = if *deep {
+                let config = Config::load(&repo.root)?;
+                let options = analysis_options(cli, &config, &repo)?;
+                progress.phase("Scanning Git history", None, None);
+                let mut data = analyze_with_options_and_cancel(&repo, &config, &options, cancel)?;
+                progress.phase("Measuring current ownership", None, None);
+                analyze_deep_with_cancel(&repo, &config, &mut data, DeepLimits::default(), cancel)?;
+                Some(data)
+            } else {
+                None
+            };
+            progress.phase(&format!("Running {name}"), None, None);
+            match tool {
+                Companion::GitFame => external::fame::capture(
+                    &executable,
+                    &repo.root,
+                    &output,
+                    theme(cli),
+                    data.as_ref(),
+                )?,
+                Companion::GitOfTheseus => {
+                    external::theseus::capture(&executable, &repo.root, &output)?
+                }
+            }
+            println!(
+                "External {name} output written to: {}",
+                safe(&output.join("external").join(dir).to_string_lossy())
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run(mut cli: Cli) -> Result<(), String> {
     let cancel = CancelFlag::default();
     cancel.install_ctrlc()?;
     let progress = Progress::new(cli.verbose);
-    let theme = match cli.theme {
-        ThemeArg::Dark => Theme::Dark,
-        ThemeArg::Light => Theme::Light,
-    };
+    if let Some(CommandArg::External { action }) = &cli.command {
+        return run_external(&cli, action, &cancel, &progress);
+    }
+    let theme = theme(&cli);
     let animate = match &cli.command {
         Some(CommandArg::Animate {
             format,
@@ -467,9 +615,9 @@ fn run(cli: Cli) -> Result<(), String> {
         )),
         _ => None,
     };
-    let (repository, export, view, deep) = match cli.command {
+    let (repository, export, view, deep) = match cli.command.take() {
         None => (
-            cli.repository.unwrap_or_else(|| PathBuf::from(".")),
+            cli.repository.take().unwrap_or_else(|| PathBuf::from(".")),
             false,
             None,
             false,
@@ -549,34 +697,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 deep,
             )
         }
+        Some(CommandArg::External { .. }) => unreachable!("external commands return early"),
     };
     let repo = discover(&repository)?;
     let config = Config::load(&repo.root)?;
-    let timezone = match cli.timezone {
-        Some(zone) => zone,
-        None => config
-            .timezone
-            .as_deref()
-            .map(str::parse::<TimezoneChoice>)
-            .transpose()
-            .map_err(|error| format!("{}: {error}", repo.root.join(".git-wrapped.json").display()))?
-            .unwrap_or_default(),
-    };
-    let options = AnalysisOptions {
-        since: cli.since,
-        until: cli.until,
-        author_ids: cli.author,
-        exclusions: config
-            .exclude
-            .iter()
-            .chain(cli.exclude.iter())
-            .cloned()
-            .collect(),
-        timezone,
-        include_merges: !cli.no_merges,
-    };
+    let options = analysis_options(&cli, &config, &repo)?;
     if let Some((format, gource)) = animate {
-        let output = cli.output.unwrap_or_else(|| {
+        let output = cli.output.take().unwrap_or_else(|| {
             PathBuf::from("git-wrapped-report").join(match format {
                 AnimateFormat::Gif => "story.gif",
                 AnimateFormat::Mp4 => "repo-history.mp4",
@@ -597,9 +724,7 @@ fn run(cli: Cli) -> Result<(), String> {
         println!("Animation written to: {}", safe(&output.to_string_lossy()));
         return Ok(());
     }
-    let output = cli
-        .output
-        .unwrap_or_else(|| PathBuf::from("git-wrapped-report"));
+    let output = report_dir(&cli);
     let cache_path = output.join(".git-wrapped-cache.json");
     let key = if !export && (view.is_none() || deep) && !cli.no_cache {
         match cache::key(&repo, &config, &options, deep) {
