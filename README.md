@@ -10,7 +10,7 @@ macOS and Linux:
 curl -fsSL https://github.com/adawg-dev/git-wrapped/releases/latest/download/install.sh | sh
 ```
 
-This installs a prebuilt binary to `~/.local/bin` (set `INSTALL_DIR` to change it, `GIT_WRAPPED_VERSION=v0.1.0` to pin a release). Windows users can download the `.zip` from [Releases](https://github.com/adawg-dev/git-wrapped/releases). Git must be installed.
+This installs a prebuilt binary to `~/.local/bin` (set `INSTALL_DIR` to change it, `GIT_WRAPPED_VERSION=v0.1.0` to pin a release). On Windows, run the same command inside WSL. Builds are also on [Releases](https://github.com/adawg-dev/git-wrapped/releases). Git must be installed.
 
 ## Build from source
 
