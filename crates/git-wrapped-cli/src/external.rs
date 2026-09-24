@@ -1,5 +1,6 @@
 //! Optional third-party companions. Nothing here runs unless explicitly requested.
 pub mod fame;
+pub mod theseus;
 
 use std::{
     fs,

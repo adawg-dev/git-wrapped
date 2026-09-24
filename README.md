@@ -118,11 +118,16 @@ Git Wrapped never probes or runs third-party tools during a normal report or exp
 ```sh
 git-wrapped external list
 git-wrapped external run git-fame [PATH] [--deep] [--output DIR]
+git-wrapped external run git-of-theseus [PATH] [--output DIR]
 ```
 
 `external list` prints each known companion, whether it is installed on `PATH`, its `--version` output (one bounded call; no analysis runs), and how Git Wrapped uses it.
 
 `external run git-fame` runs [git-fame](https://github.com/casperdcl/git-fame) as `git-fame --silent-progress --loc=surviving --format=json <repository>` and writes `external/git-fame/raw.json` (at most 16 MB), `comparison.svg`, and `manifest.json` (tool version, HEAD SHA, command options, source metric `git-fame surviving LOC`, and a comparison warning) inside the output directory. Nothing outside `external/` changes, including `data.json`. The chart lists names exactly as git-fame reports them and shows only numeric columns named by git-fame's JSON header. With `--deep`, it adds Git Wrapped's current HEAD ownership beside them. Rows are never matched: git-fame may apply `.mailmap` and aliases differently from Git Wrapped's `.mailmap` then `.git-wrapped.json` normalization, so the two sides are source-labeled, not equivalent. Malformed, oversized, or failed runs publish nothing.
+
+`external run git-of-theseus` runs [Git of Theseus](https://github.com/erikbern/git-of-theseus) as `git-of-theseus-analyze <repository> --outdir <temporary-directory>`, then copies only `cohorts.json`, `authors.json`, `exts.json`, and `survival.json` (each at most 16 MB and valid JSON) to `external/git-of-theseus/`, followed by a `manifest.json` naming the exact files, tool version, and HEAD SHA. These cohorts are a third-party method, not Git Wrapped's canonical `--deep` survival. An installed version whose `--help` lacks `--outdir` is reported as incompatible rather than guessed at.
+
+[Hercules](https://github.com/src-d/hercules) and [git-quick-stats](https://github.com/git-quick-stats/git-quick-stats) appear in `external list` as manual companions: run them yourself. Hercules output can be very large and has no schema Git Wrapped can rely on, so neither is imported.
 
 ## Scope
 

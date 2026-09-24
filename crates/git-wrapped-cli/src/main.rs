@@ -125,6 +125,7 @@ enum ExternalAction {
 #[derive(Clone, Copy, ValueEnum)]
 enum Companion {
     GitFame,
+    GitOfTheseus,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -514,9 +515,14 @@ fn run_external(
             repository,
             deep,
         } => {
-            let executable = match tool {
-                Companion::GitFame => external::require("git-fame")?,
+            let (name, dir) = match tool {
+                Companion::GitFame => ("git-fame", "git-fame"),
+                Companion::GitOfTheseus => ("git-of-theseus-analyze", "git-of-theseus"),
             };
+            if *deep && matches!(tool, Companion::GitOfTheseus) {
+                return Err("--deep applies only to git-fame".into());
+            }
+            let executable = external::require(name)?;
             let repo = discover(repository.as_deref().unwrap_or(Path::new(".")))?;
             let data = if *deep {
                 let config = Config::load(&repo.root)?;
@@ -529,17 +535,22 @@ fn run_external(
             } else {
                 None
             };
-            progress.phase("Running git-fame", None, None);
-            external::fame::capture(
-                &executable,
-                &repo.root,
-                &cli.output,
-                theme(cli),
-                data.as_ref(),
-            )?;
+            progress.phase(&format!("Running {name}"), None, None);
+            match tool {
+                Companion::GitFame => external::fame::capture(
+                    &executable,
+                    &repo.root,
+                    &cli.output,
+                    theme(cli),
+                    data.as_ref(),
+                )?,
+                Companion::GitOfTheseus => {
+                    external::theseus::capture(&executable, &repo.root, &cli.output)?
+                }
+            }
             println!(
-                "External git-fame analysis written to: {}",
-                safe(&cli.output.join("external/git-fame").to_string_lossy())
+                "External {name} output written to: {}",
+                safe(&cli.output.join("external").join(dir).to_string_lossy())
             );
         }
     }
