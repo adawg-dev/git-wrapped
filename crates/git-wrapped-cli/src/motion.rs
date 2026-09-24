@@ -1,8 +1,14 @@
 pub mod gource;
 pub mod story;
 
+pub use gource::GourceOptions;
+
 use crate::{
+    analysis::AnalysisOptions,
+    config::Config,
+    git::Repository,
     model::RepositoryAnalytics,
+    progress::CancelFlag,
     render::{checked_directory, raster, Theme},
 };
 use std::{
@@ -31,6 +37,12 @@ impl TempOutput {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         checked_directory(parent)?;
+        // A "./" prefix keeps relative temporary paths from reading as child options.
+        let parent = if parent.is_relative() {
+            Path::new(".").join(parent)
+        } else {
+            parent.to_path_buf()
+        };
         match fs::symlink_metadata(target) {
             Ok(meta) if meta.file_type().is_symlink() => {
                 return Err(format!("refusing symlink output: {}", target.display()))
@@ -78,6 +90,15 @@ impl Drop for TempOutput {
     }
 }
 
+/// A helper file removed when dropped.
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 /// Write the fixed seven-scene 720×720 GIF recap; the static poster is the reduced-motion alternative.
 pub fn write_gif(data: &RepositoryAnalytics, output: &Path, theme: Theme) -> Result<(), String> {
     use image::{codecs::gif, Delay, Frame, RgbaImage};
@@ -118,5 +139,45 @@ pub fn write_gif(data: &RepositoryAnalytics, output: &Path, theme: Theme) -> Res
     }
     file.sync_all().map_err(|e| format!("write GIF: {e}"))?;
     drop(file);
+    temp.publish()
+}
+
+/// Render repository history through optional Gource and FFmpeg into an MP4.
+pub fn write_mp4(
+    repo: &Repository,
+    config: &Config,
+    filters: &AnalysisOptions,
+    output: &Path,
+    options: GourceOptions,
+) -> Result<(), String> {
+    write_mp4_with_cancel(
+        repo,
+        config,
+        filters,
+        output,
+        options,
+        &CancelFlag::default(),
+    )
+}
+
+pub fn write_mp4_with_cancel(
+    repo: &Repository,
+    config: &Config,
+    filters: &AnalysisOptions,
+    output: &Path,
+    options: GourceOptions,
+    cancel: &CancelFlag,
+) -> Result<(), String> {
+    options.validate()?;
+    gource::require_tool("gource", "--version", "Gource")?;
+    gource::require_tool("ffmpeg", "-version", "FFmpeg")?;
+    let (temp, file) = TempOutput::create(output, ".mp4")?;
+    drop(file);
+    let log = TempFile(temp.temp.with_extension("gource.log"));
+    let stats = gource::write_custom_log_with_cancel(repo, config, filters, &log.0, cancel)?;
+    if stats.events == 0 {
+        return Err("no selected file changes to animate".into());
+    }
+    gource::run_pipeline(&log.0, &temp.temp, options, cancel)?;
     temp.publish()
 }

@@ -32,6 +32,7 @@ git-wrapped activity [--bucket day|week|month|quarter|year] [PATH]
 git-wrapped archaeology [PATH]
 git-wrapped awards [PATH]
 git-wrapped top commits|additions|deletions|churn|files [PATH]
+git-wrapped animate [PATH] [--format gif|mp4] [--output FILE] [--theme dark|light] [--seconds-per-day N] [--hide-filenames]
 ```
 
 `PATH` defaults to `.`, and `--output` defaults to `git-wrapped-report` relative to the directory where you invoked the command. `--theme` defaults to `dark`. Reports write `summary.png` at 2400×3200 by default; `--no-png` skips PNG generation (an earlier PNG in the same output directory is left alone). Export writes JSON to stdout; report commands write files and print a short summary. Focused commands print text, with up to 20 rows per list. `contributors` defaults to commits; `top` is a shortcut for its five named rankings, including `top files` for contributors by distinct files touched. `contributor` accepts an exact ID or a unique case-insensitive display name. `activity` defaults to month and shows the latest 20 periods. `archaeology` ranks changed paths by historical churn and marks paths absent from HEAD as historical. Global `--exclude PATTERN` may repeat before or after a subcommand. `--help` lists the current options. A repository with no commits or an invalid configuration exits with an error before creating report files.
@@ -75,6 +76,14 @@ Reports reuse `.git-wrapped-cache.json` when the canonical repository path, HEAD
 
 Long scans show coarse progress on stderr when stderr is a terminal; `--verbose` enables it when output is redirected. Export keeps stdout as JSON. Press Ctrl+C to cancel a scan (exit code 130); cancellation before rendering leaves no report files from that run.
 
+## Animation
+
+`git-wrapped animate` writes `git-wrapped-report/story.gif` by default: a 720×720 looping GIF of seven fixed scenes (intro, growth, people, rhythm, paths, awards, outro), seven frames each, 100 ms transitions and a 1.8 s hold per scene. It uses the same analytics, palette, and bundled font as the static report, needs no external software, and is byte-identical for the same data and theme on one toolchain. Output over 20 MB is refused. `summary.svg` is the reduced-motion alternative. Ordinary reports never render animation.
+
+`animate --format mp4` writes `git-wrapped-report/repo-history.mp4` by piping [Gource](https://gource.io) (GPL-3.0) PPM frames into [FFmpeg](https://ffmpeg.org) (LGPL/GPL, with libx264) at 1280×720 and 30 fps; install both separately, for example `brew install gource ffmpeg` or `apt install gource ffmpeg`. They run only for this command, receive argument arrays (never a shell), and a missing tool is named before anything is written. Gource reads a custom log built from Git Wrapped's own scanner: one `M` event per selected file change, the same `--since`/`--until`/`--author`/`--exclude`/`--no-merges` selection as reports, mailmapped display names, lossy display paths with `|` and control characters replaced by `_`, and at most 200,000 events. `--seconds-per-day` (default 0.1) and `--hide-filenames` tune the Gource view.
+
+For `animate`, `--output` names the file. Both formats write a temporary sibling and rename it into place only on success; a symlink output is refused. A tool failure or Ctrl+C (exit code 130) kills and reaps both children and leaves no partial file.
+
 ## What the numbers mean
 
 - **Commits:** HEAD-reachable commits, including root, empty, and merge commits. The date range uses author dates.
@@ -113,4 +122,4 @@ Shallow clones still work, but a warning says historical totals cover **availabl
 
 ## Scope
 
-The current release produces SVG, PNG, JSON, and focused terminal views; `--deep` adds sampled blame-based ownership, survival, deleted-line interactions, and file coupling. A terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.
+The current release produces SVG, PNG, JSON, and focused terminal views; `--deep` adds sampled blame-based ownership, survival, deleted-line interactions, and file coupling. `animate` adds a GIF recap and an optional Gource MP4. A terminal explorer and external analyzers are separate future work. See [architecture](docs/architecture.md) for the current data flow.

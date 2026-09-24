@@ -160,3 +160,288 @@ fn gource_log_sanitizes_fields_normalizes_authors_and_sorts() {
     .unwrap();
     assert_eq!((filtered.commits, filtered.events), (1, 2));
 }
+
+fn cli(
+    args: &[&str],
+    cwd: &std::path::Path,
+    path: Option<&std::ffi::OsStr>,
+) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_git-wrapped"));
+    command.current_dir(cwd).args(args);
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command.output().unwrap()
+}
+
+/// A PATH holding only fake tools and the real Git.
+fn fake_path(tools: &[(&str, &str)]) -> (tempfile::TempDir, std::ffi::OsString) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempdir();
+    for (name, script) in tools {
+        let path = bin.path().join(name);
+        fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let git = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let git = std::path::PathBuf::from(String::from_utf8(git.stdout).unwrap().trim());
+    std::os::unix::fs::symlink(git, bin.path().join("git")).unwrap();
+    let path = bin.path().as_os_str().to_owned();
+    (bin, path)
+}
+
+fn repo_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.commit("a|b", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f.commit("c", b"two\n", "b@x", "2024-01-02T10:00:00 +0000");
+    f
+}
+
+fn alive(pid_file: &std::path::Path) -> bool {
+    let pid = fs::read_to_string(pid_file).unwrap();
+    std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+const VERSION_OK: &str = r#"case "$1" in --version|-version) exit 0;; esac"#;
+
+#[test]
+fn animate_gif_works_without_external_tools() {
+    let f = repo_fixture();
+    let (_bin, path) = fake_path(&[]);
+    let result = cli(&["animate", "--theme", "light"], f.dir.path(), Some(&path));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let bytes = fs::read(f.dir.path().join("git-wrapped-report/story.gif")).unwrap();
+    assert_eq!(&bytes[..6], b"GIF89a");
+    let out = tempdir();
+    let target = out.path().join("custom.gif");
+    let target_arg = target.to_str().unwrap();
+    let result = cli(
+        &["animate", "--format", "gif", "--output", target_arg],
+        f.dir.path(),
+        None,
+    );
+    assert!(result.status.success());
+    assert!(target.exists());
+}
+
+#[test]
+fn animate_mp4_names_missing_tools_and_writes_nothing() {
+    let f = repo_fixture();
+    let out = tempdir();
+    let video = out.path().join("history.mp4");
+    for tools in [
+        vec![],
+        vec![("gource", VERSION_OK)],
+        vec![("ffmpeg", VERSION_OK)],
+    ] {
+        let (_bin, path) = fake_path(&tools);
+        let result = cli(
+            &[
+                "animate",
+                "--format",
+                "mp4",
+                "--output",
+                video.to_str().unwrap(),
+            ],
+            f.dir.path(),
+            Some(&path),
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success());
+        let missing = if tools.first().is_some_and(|t| t.0 == "gource") {
+            "FFmpeg is not installed"
+        } else {
+            "Gource is not installed"
+        };
+        assert!(stderr.contains(missing), "{stderr}");
+        assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn animate_mp4_pipes_sanitized_log_through_both_tools() {
+    let f = repo_fixture();
+    let (_bin, path) = fake_path(&[
+        (
+            "gource",
+            &format!(
+                r#"{VERSION_OK}
+for a; do log=$a; done
+printf '%s\n' "$@" > "${{log%/*}}/gource-args"
+/bin/cat "$log""#
+            ),
+        ),
+        (
+            "ffmpeg",
+            &format!(
+                r#"{VERSION_OK}
+for a; do out=$a; done
+/bin/cat > "$out""#
+            ),
+        ),
+    ]);
+    let out = tempdir();
+    let video = out.path().join("history.mp4");
+    let result = cli(
+        &[
+            "animate",
+            "--format",
+            "mp4",
+            "--hide-filenames",
+            "--seconds-per-day",
+            "2",
+            "--output",
+            video.to_str().unwrap(),
+        ],
+        f.dir.path(),
+        Some(&path),
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let contents = fs::read_to_string(&video).unwrap();
+    assert!(contents.contains("|Test|M|a_b\n") && contents.contains("|Test|M|c\n"));
+    let args = fs::read_to_string(out.path().join("gource-args")).unwrap();
+    assert!(args.contains("--log-format\ncustom\n-1280x720\n--output-ppm-stream\n-\n"));
+    assert!(args.contains("--seconds-per-day\n2\n") && args.contains("--hide\nfilenames\n"));
+    let names: Vec<_> = fs::read_dir(out.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+}
+
+#[test]
+fn animate_mp4_child_failure_reaps_peer_and_leaves_no_output() {
+    let f = repo_fixture();
+    let out = tempdir();
+    let pids = tempdir();
+    let pid_file = pids.path().join("gource");
+    let (_bin, path) = fake_path(&[
+        (
+            "gource",
+            &format!(
+                "{VERSION_OK}\necho $$ > '{}'\nexec /bin/sleep 30",
+                pid_file.display()
+            ),
+        ),
+        ("ffmpeg", &format!("{VERSION_OK}\nexit 7")),
+    ]);
+    let video = out.path().join("history.mp4");
+    let started = std::time::Instant::now();
+    let result = cli(
+        &[
+            "animate",
+            "--format",
+            "mp4",
+            "--output",
+            video.to_str().unwrap(),
+        ],
+        f.dir.path(),
+        Some(&path),
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !result.status.success() && stderr.contains("FFmpeg exited"),
+        "{stderr}"
+    );
+    assert!(!alive(&pid_file));
+    assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn animate_mp4_interrupt_reaps_both_children() {
+    let f = repo_fixture();
+    let out = tempdir();
+    let pids = tempdir();
+    let block = |name: &str| {
+        format!(
+            "{VERSION_OK}\necho $$ > '{}'\nexec /bin/sleep 30",
+            pids.path().join(name).display()
+        )
+    };
+    let (_bin, path) = fake_path(&[("gource", &block("gource")), ("ffmpeg", &block("ffmpeg"))]);
+    let video = out.path().join("history.mp4");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_git-wrapped"))
+        .current_dir(f.dir.path())
+        .args([
+            "animate",
+            "--format",
+            "mp4",
+            "--output",
+            video.to_str().unwrap(),
+        ])
+        .env("PATH", &path)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    for _ in 0..500 {
+        if pids.path().join("gource").exists() && pids.path().join("ffmpeg").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(130));
+    assert!(!alive(&pids.path().join("gource")) && !alive(&pids.path().join("ffmpeg")));
+    assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn animate_mp4_refuses_symlink_output() {
+    let f = repo_fixture();
+    let (_bin, path) = fake_path(&[("gource", VERSION_OK), ("ffmpeg", VERSION_OK)]);
+    let out = tempdir();
+    let target = out.path().join("target.txt");
+    fs::write(&target, "untouched").unwrap();
+    let link = out.path().join("history.mp4");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let result = cli(
+        &[
+            "animate",
+            "--format",
+            "mp4",
+            "--output",
+            link.to_str().unwrap(),
+        ],
+        f.dir.path(),
+        Some(&path),
+    );
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("symlink"));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+    assert_eq!(fs::read_dir(out.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn animate_mp4_rejects_invalid_seconds_per_day() {
+    let f = repo_fixture();
+    let result = cli(
+        &["animate", "--format", "mp4", "--seconds-per-day", "0"],
+        f.dir.path(),
+        None,
+    );
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("--seconds-per-day"));
+}
