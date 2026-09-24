@@ -4,14 +4,14 @@ use crate::{
     git::{head_paths, reachable_tag_dates, scan_with_cancel, tree_paths, Repository},
     model::{
         Activity, ActivityCell, CommitRecord, CommitSummary, ContributorAnalytics,
-        DirectoryAnalytics, ExtensionAnalytics, FileAnalytics, Insights, Overlap, Peak,
+        DirectoryAnalytics, ExtensionAnalytics, FileAnalytics, Insights, Overlap, Peak, RawCommit,
         RepositoryAnalytics, RepositoryMetadata, TagDate, TreeSample, WordCount,
     },
     progress::CancelFlag,
 };
 use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Timelike};
 use chrono_tz::Tz;
-use globset::{Glob, GlobSetBuilder};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,
@@ -537,6 +537,96 @@ pub fn analyze_with_options(
     analyze_with_options_and_cancel(repo, config, options, &CancelFlag::default())
 }
 
+/// History selection shared by canonical analytics and other history consumers.
+pub(crate) struct Selection {
+    pub(crate) authors: Vec<String>,
+    pub(crate) excluded_patterns: Vec<String>,
+    pub(crate) excluded: GlobSet,
+}
+
+impl Selection {
+    pub(crate) fn new(
+        repo: &Repository,
+        config: &Config,
+        options: &AnalysisOptions,
+    ) -> Result<Self, String> {
+        if options
+            .since
+            .zip(options.until)
+            .is_some_and(|(since, until)| until < since)
+        {
+            return Err("until date must be on or after since date".into());
+        }
+        let selected_authors: Vec<String> = options
+            .author_ids
+            .iter()
+            .map(|id| config.canonical_author_id(id))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let excluded_patterns = if options.exclusions.starts_with(&config.exclude) {
+            options.exclusions.clone()
+        } else {
+            config
+                .exclude
+                .iter()
+                .chain(&options.exclusions)
+                .cloned()
+                .collect()
+        };
+        let mut excluded_builder = GlobSetBuilder::new();
+        for (index, pattern) in excluded_patterns.iter().enumerate() {
+            let source = if index < config.exclude.len() {
+                format!("{}: ", repo.root.join(".git-wrapped.json").display())
+            } else {
+                "--exclude: ".into()
+            };
+            excluded_builder.add(Glob::new(pattern).map_err(|error| {
+                format!("{source}invalid exclude pattern {pattern:?}: {error}")
+            })?);
+        }
+        let excluded = excluded_builder
+            .build()
+            .map_err(|error| format!("invalid exclude patterns: {error}"))?;
+        Ok(Selection {
+            authors: selected_authors,
+            excluded_patterns,
+            excluded,
+        })
+    }
+}
+
+/// Normalized id, display name, and selected-timezone author time when the commit is selected.
+pub(crate) fn select_commit(
+    raw: &RawCommit,
+    config: &Config,
+    options: &AnalysisOptions,
+    selected_authors: &[String],
+) -> Result<Option<(String, String, DateTime<FixedOffset>)>, String> {
+    let author_time = DateTime::parse_from_rfc3339(&raw.author_time)
+        .map_err(|e| format!("invalid author time for {}: {e}", raw.sha))?;
+    let (id, name) = normalize(&raw.mapped_author, config);
+    if !options.include_merges && raw.parents.len() > 1 {
+        return Ok(None);
+    }
+    if !selected_authors.is_empty() && selected_authors.binary_search(&id).is_err() {
+        return Ok(None);
+    }
+    let time = match options.timezone {
+        TimezoneChoice::Commit => author_time,
+        TimezoneChoice::Utc => author_time.with_timezone(&chrono::Utc).fixed_offset(),
+        TimezoneChoice::Local => author_time.with_timezone(&chrono::Local).fixed_offset(),
+        TimezoneChoice::Named(zone) => author_time.with_timezone(&zone).fixed_offset(),
+    };
+    let day = time.date_naive();
+    if options.since.is_some_and(|since| day < since)
+        || options.until.is_some_and(|until| day > until)
+    {
+        return Ok(None);
+    }
+    Ok(Some((id, name, time)))
+}
+
 pub fn analyze_with_options_and_cancel(
     repo: &Repository,
     config: &Config,
@@ -544,45 +634,11 @@ pub fn analyze_with_options_and_cancel(
     cancel: &CancelFlag,
 ) -> Result<RepositoryAnalytics, String> {
     cancel.check()?;
-    if options
-        .since
-        .zip(options.until)
-        .is_some_and(|(since, until)| until < since)
-    {
-        return Err("until date must be on or after since date".into());
-    }
-    let selected_authors: Vec<String> = options
-        .author_ids
-        .iter()
-        .map(|id| config.canonical_author_id(id))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let excluded_patterns = if options.exclusions.starts_with(&config.exclude) {
-        options.exclusions.clone()
-    } else {
-        config
-            .exclude
-            .iter()
-            .chain(&options.exclusions)
-            .cloned()
-            .collect()
-    };
-    let mut excluded_builder = GlobSetBuilder::new();
-    for (index, pattern) in excluded_patterns.iter().enumerate() {
-        let source = if index < config.exclude.len() {
-            format!("{}: ", repo.root.join(".git-wrapped.json").display())
-        } else {
-            "--exclude: ".into()
-        };
-        excluded_builder
-            .add(Glob::new(pattern).map_err(|error| {
-                format!("{source}invalid exclude pattern {pattern:?}: {error}")
-            })?);
-    }
-    let excluded = excluded_builder
-        .build()
-        .map_err(|error| format!("invalid exclude patterns: {error}"))?;
+    let Selection {
+        authors: selected_authors,
+        excluded_patterns,
+        excluded,
+    } = Selection::new(repo, config, options)?;
     let mut contributors: BTreeMap<String, WorkingContributor> = BTreeMap::new();
     let mut activity: BTreeMap<String, Activity> = BTreeMap::new();
     let mut heatmap: BTreeMap<String, ActivityCell> = BTreeMap::new();
@@ -599,27 +655,10 @@ pub fn analyze_with_options_and_cancel(
     let mut excluded_changes = 0;
 
     scan_with_cancel(repo, cancel, |raw| {
-        let author_time = DateTime::parse_from_rfc3339(&raw.author_time)
-            .map_err(|e| format!("invalid author time for {}: {e}", raw.sha))?;
-        let (id, name) = normalize(&raw.mapped_author, config);
-        if !options.include_merges && raw.parents.len() > 1 {
+        let Some((id, name, time)) = select_commit(&raw, config, options, &selected_authors)?
+        else {
             return Ok(());
-        }
-        if !selected_authors.is_empty() && selected_authors.binary_search(&id).is_err() {
-            return Ok(());
-        }
-        let time = match options.timezone {
-            TimezoneChoice::Commit => author_time,
-            TimezoneChoice::Utc => author_time.with_timezone(&chrono::Utc).fixed_offset(),
-            TimezoneChoice::Local => author_time.with_timezone(&chrono::Local).fixed_offset(),
-            TimezoneChoice::Named(zone) => author_time.with_timezone(&zone).fixed_offset(),
         };
-        let day = time.date_naive();
-        if options.since.is_some_and(|since| day < since)
-            || options.until.is_some_and(|until| day > until)
-        {
-            return Ok(());
-        }
         let month = time.format("%Y-%m").to_string();
         let date = time.date_naive().to_string();
         // Fixed common-word list keeps topics descriptive and reproducible.

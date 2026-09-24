@@ -82,3 +82,81 @@ fn gif_refuses_symlink_output_and_keeps_target() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
 }
+
+#[test]
+fn gource_log_sanitizes_fields_normalizes_authors_and_sorts() {
+    use std::os::unix::ffi::OsStrExt;
+    let f = Fixture::new();
+    fs::write(
+        f.dir.path().join(".mailmap"),
+        "Real Name <real@x> <alias@x>\n",
+    )
+    .unwrap();
+    f.commit(
+        "b|pipe\nline",
+        b"two\n",
+        "alias@x",
+        "2024-01-02T10:00:00 +0000",
+    );
+    f.commit("a", b"one\n", "other@x", "2024-01-01T10:00:00 +0000");
+    // APFS rejects non-UTF8 names, so stage the odd path through the index only.
+    let blob = f.git(&["hash-object", "-w", "a"]).stdout;
+    let mut info = b"100644,".to_vec();
+    info.extend_from_slice(String::from_utf8(blob).unwrap().trim().as_bytes());
+    info.extend_from_slice(b",odd\xff.rs");
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(f.dir.path())
+        .args(["update-index", "--add", "--cacheinfo"])
+        .arg(std::ffi::OsStr::from_bytes(&info))
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(f.dir.path())
+        .args(["commit", "-qm", "odd"])
+        .env("GIT_AUTHOR_DATE", "2024-01-03T10:00:00 +0000")
+        .env("GIT_AUTHOR_EMAIL", "other@x")
+        .status()
+        .unwrap()
+        .success());
+    let repo = discover(f.dir.path()).unwrap();
+    let dir = tempdir();
+    let log = dir.path().join("history.log");
+    let stats = git_wrapped::motion::gource::write_custom_log(
+        &repo,
+        &Config::default(),
+        &Default::default(),
+        &log,
+    )
+    .unwrap();
+    assert_eq!((stats.commits, stats.events), (3, 4));
+    let contents = fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(lines.len(), 4);
+    let mut previous = 0_i64;
+    for line in &lines {
+        let fields: Vec<&str> = line.split('|').collect();
+        assert_eq!(fields.len(), 4, "{line}");
+        assert_eq!(fields[2], "M");
+        let timestamp: i64 = fields[0].parse().unwrap();
+        assert!(timestamp >= previous);
+        previous = timestamp;
+    }
+    assert!(contents.contains("|Real Name|M|b_pipe_line\n"));
+    assert!(contents.contains("|Test|M|odd\u{fffd}.rs\n"));
+    assert!(!contents.contains("alias@x"));
+    let filtered = git_wrapped::motion::gource::write_custom_log(
+        &repo,
+        &Config::default(),
+        &git_wrapped::analysis::AnalysisOptions {
+            exclusions: vec!["*.rs".into()],
+            since: chrono::NaiveDate::from_ymd_opt(2024, 1, 2),
+            ..Default::default()
+        },
+        &dir.path().join("filtered.log"),
+    )
+    .unwrap();
+    assert_eq!((filtered.commits, filtered.events), (1, 2));
+}

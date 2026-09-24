@@ -1,3 +1,4 @@
+pub mod gource;
 pub mod story;
 
 use crate::{
