@@ -208,6 +208,61 @@ fn interactions_exclude_merges_and_count_same_author_deletions_once() {
 }
 
 #[test]
+fn interactions_count_only_removed_regular_file_lines() {
+    let f = Fixture::new();
+    f.commit(
+        "a",
+        b"l1\nl2\nl3\nl4\nl5\n",
+        "a@x",
+        "2024-01-01T10:00:00 +0000",
+    );
+    for (i, date) in ["2024-01-02T10:00:00 +0000", "2024-01-03T10:00:00 +0000"]
+        .into_iter()
+        .enumerate()
+    {
+        let sha = String::from_utf8(f.git(&["rev-parse", "HEAD"]).stdout).unwrap();
+        let entry = format!("160000,{},module", sha.trim());
+        let mut args = vec!["update-index", "--cacheinfo", &entry];
+        if i == 0 {
+            args.insert(1, "--add");
+        }
+        assert!(f.git(&args).status.success());
+        authored_commit(&f, "a@x", date, &["commit", "-qm", "gitlink"]);
+    }
+    for (target, date) in [
+        ("a", "2024-01-04T10:00:00 +0000"),
+        ("module", "2024-01-05T10:00:00 +0000"),
+    ] {
+        let _ = fs::remove_file(f.dir.path().join("link"));
+        std::os::unix::fs::symlink(target, f.dir.path().join("link")).unwrap();
+        assert!(f.git(&["add", "link"]).status.success());
+        authored_commit(&f, "a@x", date, &["commit", "-qm", "symlink"]);
+    }
+    assert!(f
+        .git(&["config", "diff.interHunkContext", "10"])
+        .status
+        .success());
+    f.commit("a", b"l1\nl3\nl5\n", "b@x", "2024-01-06T10:00:00 +0000");
+    let repo = discover(f.dir.path()).unwrap();
+    let mut data = analyze(&repo, &Config::default()).unwrap();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut data, Default::default())
+        .unwrap();
+    let deep = data.deep.unwrap();
+    let cells: Vec<_> = deep
+        .interactions
+        .iter()
+        .map(|x| {
+            (
+                x.deleting_author_id.as_str(),
+                x.original_author_id.as_str(),
+                x.deleted_lines,
+            )
+        })
+        .collect();
+    assert_eq!(cells, [("b@x", "a@x", 2)]);
+}
+
+#[test]
 fn coupling_counts_distinct_commits_and_skips_wide_changes() {
     let f = Fixture::new();
     fs::write(f.dir.path().join("p1"), "1\n").unwrap();
@@ -285,6 +340,17 @@ fn deep_awards_and_interaction_charts_need_complete_coverage() {
     assert!(svg.contains("Lines removed by") && svg.contains("originally authored by"));
     assert!(svg.contains("1 deletion-bearing commits examined · 0 skipped"));
     assert!(out.path().join("awards/cross-author-cleanup.svg").exists());
+    let mut again = data.clone();
+    git_wrapped::deep::analyze_deep(&repo, &Config::default(), &mut again, Default::default())
+        .unwrap();
+    assert_eq!(
+        again
+            .awards
+            .iter()
+            .filter(|a| a.slug == "cross-author-cleanup")
+            .count(),
+        1
+    );
     git_wrapped::render::render_report(&shallow, out.path(), git_wrapped::render::Theme::Dark)
         .unwrap();
     for name in [

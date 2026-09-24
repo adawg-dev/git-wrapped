@@ -350,6 +350,8 @@ pub fn analyze_deep_with_cancel(
     data.tree_samples = samples;
     data.deep = Some(deep);
     let awards = crate::awards::select_deep_awards(data);
+    data.awards
+        .retain(|award| !crate::awards::DEEP_AWARD_SLUGS.contains(&award.slug.as_str()));
     data.awards.extend(awards);
     Ok(())
 }

@@ -1338,7 +1338,7 @@ pub fn render_report_with_options(
         );
         for (column, id) in people.iter().enumerate() {
             let x = 330 + column as u32 * 82 + 40;
-            body += &format!("<text transform=\"translate({x},370) rotate(-45)\" font-size=\"14\" fill=\"{fg}\" font-family=\"Lato,system-ui,sans-serif\">{}</text>", escape_xml(&fit_text(id, 238, 14)));
+            body += &format!("<text transform=\"translate({x},370) rotate(-45)\" font-size=\"14\" fill=\"{fg}\" font-family=\"Lato,system-ui,sans-serif\">{}</text>", escape_xml(&fit_text(id, 170, 14)));
         }
         for (row, deleting) in people.iter().enumerate() {
             let y = 390 + row as u32 * 40;

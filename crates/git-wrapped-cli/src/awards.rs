@@ -176,6 +176,12 @@ pub fn select_awards(data: &RepositoryAnalytics) -> Vec<Award> {
     awards
 }
 
+pub const DEEP_AWARD_SLUGS: [&str; 3] = [
+    "ancient-code-guardian",
+    "most-frequently-blamed",
+    "cross-author-cleanup",
+];
+
 /// Deep-only awards; omitted unless the deep pass finished within budget.
 pub fn select_deep_awards(data: &RepositoryAnalytics) -> Vec<Award> {
     let Some(deep) = data.deep.as_ref().filter(|deep| !deep.coverage.truncated) else {

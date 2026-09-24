@@ -59,6 +59,7 @@ fn removed_line_ranges(
             "--no-textconv",
             "--no-color",
             "--unified=0",
+            "--inter-hunk-context=0",
             if change.renamed {
                 "--find-renames"
             } else {
@@ -98,6 +99,24 @@ fn sort_pairs(coupling: HashMap<(String, String), u64>) -> Vec<FilePair> {
     });
     pairs.truncate(MAX_PAIRS);
     pairs
+}
+
+/// Whether `path` is a regular file (not a symlink or gitlink) in `revision`'s tree.
+fn regular_file_at(repo: &Repository, revision: &str, path: &[u8]) -> Result<bool, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&repo.root)
+        .args(["--literal-pathspecs", "ls-tree", "-z", revision, "--"])
+        .arg(OsString::from_vec(path.to_vec()))
+        .output()
+        .map_err(|e| format!("git ls-tree: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("git ls-tree exited with {}", output.status));
+    }
+    Ok(output
+        .stdout
+        .split(|&b| b == 0)
+        .any(|entry| entry.starts_with(b"100") && entry.ends_with(path)))
 }
 
 /// Deleted-line interactions from first-parent diffs of selected nonmerge commits,
@@ -190,6 +209,9 @@ pub(super) fn analyze(
         let mut local = BTreeMap::<String, u64>::new();
         let mut complete = true;
         for change in list.iter().filter(|c| c.deletions > 0) {
+            if !regular_file_at(repo, parent, &change.old_path)? {
+                continue;
+            }
             let ranges = removed_line_ranges(repo, parent, &commit.sha, change)?;
             if ranges.is_empty() {
                 continue;
