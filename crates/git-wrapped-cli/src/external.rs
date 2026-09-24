@@ -1,6 +1,9 @@
 //! Optional third-party companions. Nothing here runs unless explicitly requested.
+pub mod fame;
+
 use std::{
-    io::Read,
+    fs,
+    io::{ErrorKind, Read},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
@@ -33,6 +36,59 @@ pub fn find_executable(name: &str) -> Option<PathBuf> {
             std::fs::metadata(candidate)
                 .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
         })
+}
+
+/// The executable for an explicitly requested tool, or an actionable error.
+pub fn require(name: &str) -> Result<PathBuf, String> {
+    find_executable(name).ok_or_else(|| {
+        format!("{name} is not installed or not executable on PATH; install it, then check `git-wrapped external list`")
+    })
+}
+
+/// Refuse symlinks or non-directories along `dir` without creating anything.
+pub(crate) fn check_target(dir: &Path) -> Result<(), String> {
+    let mut current = PathBuf::new();
+    for part in dir.components() {
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "refusing symlink output directory: {}",
+                    current.display()
+                ))
+            }
+            Ok(meta) if !meta.is_dir() => {
+                return Err(format!("output is not a directory: {}", current.display()))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("inspect {}: {error}", current.display())),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn head_sha(root: &Path) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || sha.is_empty() {
+        return Err("repository has no commits".into());
+    }
+    Ok(sha)
+}
+
+/// A nonzero-exit error carrying the tool's (capped, sanitized) stderr.
+pub(crate) fn failure(tool: &str, captured: &Captured) -> String {
+    let stderr: String = String::from_utf8_lossy(&captured.stderr)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!("{tool} failed ({}): {}", captured.status, stderr.trim())
 }
 
 pub fn discover_tools() -> Vec<ToolStatus> {

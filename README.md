@@ -111,6 +111,19 @@ Awards select deterministic winners by metric, breaking ties by contributor ID. 
 
 Shallow clones still work, but a warning says historical totals cover **available history** only. Use a full clone for lifetime totals.
 
+## Optional external companions
+
+Git Wrapped never probes or runs third-party tools during a normal report or export. You can ask for them explicitly:
+
+```sh
+git-wrapped external list
+git-wrapped external run git-fame [PATH] [--deep] [--output DIR]
+```
+
+`external list` prints each known companion, whether it is installed on `PATH`, its `--version` output (one bounded call; no analysis runs), and how Git Wrapped uses it.
+
+`external run git-fame` runs [git-fame](https://github.com/casperdcl/git-fame) as `git-fame --silent-progress --loc=surviving --format=json <repository>` and writes `external/git-fame/raw.json` (at most 16 MB), `comparison.svg`, and `manifest.json` (tool version, HEAD SHA, command options, source metric `git-fame surviving LOC`, and a comparison warning) inside the output directory. Nothing outside `external/` changes, including `data.json`. The chart lists names exactly as git-fame reports them and shows only numeric columns named by git-fame's JSON header. With `--deep`, it adds Git Wrapped's current HEAD ownership beside them. Rows are never matched: git-fame may apply `.mailmap` and aliases differently from Git Wrapped's `.mailmap` then `.git-wrapped.json` normalization, so the two sides are source-labeled, not equivalent. Malformed, oversized, or failed runs publish nothing.
+
 ## Scope
 
 The current release produces SVG, PNG, JSON, and focused terminal views; `--deep` adds sampled blame-based ownership, survival, deleted-line interactions, and file coupling. A terminal explorer, external analyzers, and animation are separate future work. See [architecture](docs/architecture.md) for the current data flow.

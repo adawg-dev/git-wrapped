@@ -66,3 +66,146 @@ fn external_list_is_read_only_and_names_capabilities() {
     );
     assert!(!f.dir.path().join("git-wrapped-report").exists());
 }
+
+const FAME_JSON: &str = r#"{"total":{"loc":15},"data":[["Ada",12,1,1,"80.0/50.0/50.0"],["Bob",3,1,1,"20.0/50.0/50.0"]],"columns":["Author","loc","coms","fils"," distribution"]}"#;
+
+fn fame_script(body: &str) -> String {
+    format!("if [ \"$1\" = --version ]; then echo 'git-fame 3.1.1'; exit 0; fi\necho \"$*\" > \"$0.args\"\n{body}")
+}
+
+fn run_fame(f: &Fixture, bin: &Path, out: &Path, deep: bool) -> std::process::Output {
+    let mut args: Vec<&OsStr> = vec![
+        "--output".as_ref(),
+        out.as_os_str(),
+        "external".as_ref(),
+        "run".as_ref(),
+        "git-fame".as_ref(),
+    ];
+    if deep {
+        args.push("--deep".as_ref());
+    }
+    cli(&args, f.dir.path(), bin)
+}
+
+fn fame_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.commit("a", b"one\n", "a@x", "2024-01-01T10:00:00 +0000");
+    f
+}
+
+#[test]
+fn git_fame_capture_is_source_labeled_and_leaves_canonical_data_alone() {
+    let f = fame_fixture();
+    let bin = fake_path(&[(
+        "git-fame",
+        &fame_script(&format!("printf '%s' '{FAME_JSON}'")),
+    )]);
+    let out = tempdir();
+    let report = cli(
+        &[
+            "--no-png".as_ref(),
+            "--output".as_ref(),
+            out.path().as_os_str(),
+            "report".as_ref(),
+        ],
+        f.dir.path(),
+        bin.path(),
+    );
+    assert!(report.status.success(), "{report:?}");
+    let canonical = fs::read(out.path().join("data.json")).unwrap();
+
+    let result = run_fame(&f, bin.path(), out.path(), false);
+    assert!(result.status.success(), "{result:?}");
+    let args = fs::read_to_string(bin.path().join("git-fame.args")).unwrap();
+    assert!(args.starts_with("--silent-progress --loc=surviving --format=json "));
+    assert_eq!(fs::read(out.path().join("data.json")).unwrap(), canonical);
+    let dir = out.path().join("external/git-fame");
+    assert_eq!(fs::read_to_string(dir.join("raw.json")).unwrap(), FAME_JSON);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["tool"], "git-fame");
+    assert_eq!(manifest["version"], "3.1.1");
+    assert_eq!(manifest["source_metric"], "git-fame surviving LOC");
+    assert_eq!(manifest["head_sha"].as_str().unwrap().len(), 40);
+    assert!(manifest["warning"]
+        .as_str()
+        .unwrap()
+        .contains("not matched"));
+    let chart = fs::read_to_string(dir.join("comparison.svg")).unwrap();
+    assert!(
+        chart.contains("git-fame (external)") && chart.contains("Ada") && chart.contains("loc 12")
+    );
+    assert!(chart.contains("not matched") && chart.contains("--deep"));
+    assert!(!chart.contains("a@x"));
+
+    let deep = run_fame(&f, bin.path(), out.path(), true);
+    assert!(deep.status.success(), "{deep:?}");
+    let chart = fs::read_to_string(dir.join("comparison.svg")).unwrap();
+    assert!(chart.contains("Ada") && chart.contains("a@x") && chart.contains("1 lines"));
+    assert_eq!(fs::read(out.path().join("data.json")).unwrap(), canonical);
+}
+
+#[test]
+fn git_fame_without_header_lists_names_only() {
+    let f = fame_fixture();
+    let bin = fake_path(&[(
+        "git-fame",
+        &fame_script(r#"printf '%s' '{"data":[["Ada",12],["Bob",3]]}'"#),
+    )]);
+    let out = tempdir();
+    assert!(run_fame(&f, bin.path(), out.path(), false).status.success());
+    let chart = fs::read_to_string(out.path().join("external/git-fame/comparison.svg")).unwrap();
+    assert!(chart.contains("Ada") && !chart.contains("Ada ·"));
+}
+
+#[test]
+fn git_fame_failures_publish_nothing() {
+    let f = fame_fixture();
+    let big = tempdir();
+    let big_file = big.path().join("big.json");
+    fs::write(&big_file, vec![b' '; 17 * 1024 * 1024]).unwrap();
+    for (script, message) in [
+        (r#"printf '%s' '{"data":"wrong"}'"#.to_owned(), "data array"),
+        ("printf 'not json'".to_owned(), "git-fame JSON"),
+        (format!("/bin/cat '{}'", big_file.display()), "16 MB"),
+        ("echo boom >&2; exit 3".to_owned(), "boom"),
+    ] {
+        let bin = fake_path(&[("git-fame", &fame_script(&script))]);
+        let out = tempdir();
+        let result = run_fame(&f, bin.path(), out.path(), false);
+        assert!(!result.status.success(), "{script}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains(message), "{stderr}");
+        assert!(!out.path().join("external").exists(), "{script}");
+    }
+}
+
+#[test]
+fn missing_git_fame_is_actionable_and_creates_nothing() {
+    let f = fame_fixture();
+    let bin = fake_path(&[]);
+    let parent = tempdir();
+    let out = parent.path().join("report");
+    let result = run_fame(&f, bin.path(), &out, false);
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("git-fame is not installed"), "{stderr}");
+    assert!(!out.exists());
+}
+
+#[test]
+fn git_fame_refuses_symlinked_external_directory() {
+    let f = fame_fixture();
+    let bin = fake_path(&[(
+        "git-fame",
+        &fame_script(&format!("printf '%s' '{FAME_JSON}'")),
+    )]);
+    let out = tempdir();
+    let elsewhere = tempdir();
+    std::os::unix::fs::symlink(elsewhere.path(), out.path().join("external")).unwrap();
+    let result = run_fame(&f, bin.path(), out.path(), false);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("symlink"));
+    assert!(!bin.path().join("git-fame.args").exists());
+    assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+}

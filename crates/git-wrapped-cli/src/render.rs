@@ -15,18 +15,18 @@ pub enum Theme {
 }
 
 #[derive(Clone, Copy)]
-struct Palette {
-    bg: &'static str,
-    fg: &'static str,
-    muted: &'static str,
-    accent: &'static str,
-    secondary: &'static str,
-    positive: &'static str,
-    negative: &'static str,
+pub(crate) struct Palette {
+    pub(crate) bg: &'static str,
+    pub(crate) fg: &'static str,
+    pub(crate) muted: &'static str,
+    pub(crate) accent: &'static str,
+    pub(crate) secondary: &'static str,
+    pub(crate) positive: &'static str,
+    pub(crate) negative: &'static str,
 }
 
 impl Theme {
-    fn palette(self) -> Palette {
+    pub(crate) fn palette(self) -> Palette {
         match self {
             Theme::Dark => Palette {
                 bg: "#10131f",
@@ -65,7 +65,7 @@ fn escape_xml(value: &str) -> String {
         .collect()
 }
 
-fn text(x: u32, y: u32, size: u32, color: &str, value: &str) -> String {
+pub(crate) fn text(x: u32, y: u32, size: u32, color: &str, value: &str) -> String {
     format!("<text x=\"{x}\" y=\"{y}\" font-family=\"Lato,system-ui,sans-serif\" font-size=\"{size}\" fill=\"{color}\">{}</text>", escape_xml(value))
 }
 
@@ -78,7 +78,7 @@ fn short(value: &str, limit: usize) -> String {
 }
 
 // One em per Unicode scalar is conservative for system-ui, including wide capitals.
-fn fit_text(value: &str, width: u32, size: u32) -> String {
+pub(crate) fn fit_text(value: &str, width: u32, size: u32) -> String {
     let max_chars = (width / size).max(1) as usize;
     if value.chars().count() <= max_chars {
         value.to_owned()
@@ -205,7 +205,7 @@ fn remove_stale_card(output: &Path, name: &str, expected: &str) -> Result<(), St
     Ok(())
 }
 
-fn svg(height: u32, background: &str, body: &str) -> String {
+pub(crate) fn svg(height: u32, background: &str, body: &str) -> String {
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"{height}\" viewBox=\"0 0 1200 {height}\"><rect width=\"100%\" height=\"100%\" fill=\"{background}\"/>{body}</svg>\n")
 }
 
